@@ -779,7 +779,7 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
       setTimeout(() => { if (!S.killed) $("btn-kill").textContent = "Kill switch"; }, 5000);
       return;
     }
-    fetch("/api/kill", { method: "POST" }).then(poll);
+    fetch("/api/kill", { method: "POST", headers: { "X-Phantom": "1" } }).then(poll);
   });
   $("btn-reset").addEventListener("click", () => { S.killed = false; S.killReason = ""; S.peak = mtm(); render(); });
 

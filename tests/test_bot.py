@@ -120,3 +120,58 @@ def test_kill_from_outside_flattens_on_next_price_check(tmp_path):
     KillSwitch(tmp_path / "kill.json").trip("python -m phantom kill")
     bot.check_exits(bot.position()["entry"])
     assert bot.position() is None
+
+
+# ---- review fixes ----
+from phantom.execution.jupiter import SwapOutcomeUnknown  # noqa: E402
+
+
+class LandsAnyway(PaperBroker):
+    """Swap lands, but the API call raises (timeout after broadcast)."""
+    def execute(self, p):
+        super().execute(p)
+        raise SwapOutcomeUnknown("timed out")
+
+
+def test_buy_that_errors_but_lands_is_tracked(tmp_path):
+    market = FakeMarket()
+    bot = Bot(mode="paper", broker=LandsAnyway(tmp_path / "p.json", 1000, 0, 0), market=market, jev=FakeJev(YES), cfg=CFG,
+              limits=LIMITS, journal=Journal(tmp_path / "j.sqlite"), kill=KillSwitch(tmp_path / "k.json"), clock=market.clock)
+    assert bot.on_candle()["action"] == "enter"
+    assert bot.position()["qty"] == pytest.approx(bot.broker.balances()["btc"])
+
+
+def test_untracked_btc_trips_kill_switch_and_is_sold(tmp_path):
+    bot, market = make_bot(tmp_path, jev_view=NO)
+    bot.on_candle()
+    bot.broker.bal["btc"] = 0.01  # BTC the bot is not tracking
+    market.advance()
+    bot.on_candle()
+    assert bot.kill.tripped and bot.broker.balances()["btc"] == pytest.approx(0)
+
+
+def test_exit_sells_what_the_wallet_holds_when_short(tmp_path):
+    bot, _ = make_bot(tmp_path)
+    bot.on_candle()
+    bot.broker.bal["btc"] *= 0.995  # tiny shortfall (fees, rounding)
+    bot.check_exits(bot.position()["stop"] - 1)
+    assert bot.position() is None and bot.broker.balances()["btc"] == pytest.approx(0)
+
+
+def test_deposit_while_flat_is_not_profit_and_withdrawal_is_not_drawdown(tmp_path):
+    bot, market = make_bot(tmp_path, jev_view=NO)
+    bot.on_candle()
+    bot.broker.bal["usd"] -= 500  # withdraw half
+    market.advance()
+    bot.on_candle()
+    assert not bot.kill.tripped
+    assert bot.journal.get("peak:paper") == pytest.approx(500)
+
+
+def test_wallet_read_error_does_not_lose_the_candle(tmp_path):
+    bot, market = make_bot(tmp_path, jev_view=NO)
+    real = bot.broker.balances
+    bot.broker.balances = lambda: (_ for _ in ()).throw(RuntimeError("rpc down"))
+    assert bot.on_candle() is None
+    bot.broker.balances = real
+    assert bot.on_candle() is not None  # same candle processed once the RPC is back

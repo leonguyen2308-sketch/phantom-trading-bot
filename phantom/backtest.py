@@ -233,12 +233,13 @@ def regime_breakdown(trades: list[Trade]) -> dict[str, dict]:
     return out
 
 
-def gate(m: dict, m_2x: dict, dsr: float, regimes: dict, g: dict) -> dict[str, dict]:
+def gate(m: dict, m_2x: dict, dsr: float, regimes: dict, g: dict, killed: str | None = None) -> dict[str, dict]:
     def row(ok, value, rule):
         return {"ok": bool(ok), "value": value, "rule": rule}
-    worst = min((r["avg_r"] for r in regimes.values() if r["trades"] >= 10), default=0.0)
+    worst = min((r["avg_r"] for r in regimes.values() if r["trades"] >= 10), default=None)
     top_share = max((r["pnl_share"] for r in regimes.values()), default=0.0)
     return {
+        "kill_switch": row(killed is None, killed or "never fired", "the drawdown kill switch never fires"),
         "sharpe": row(m["sharpe"] > g["sharpe_min"], m["sharpe"], f"> {g['sharpe_min']}"),
         "max_drawdown": row(m["max_drawdown"] < g["max_drawdown_max"], m["max_drawdown"], f"< {g['max_drawdown_max']}"),
         "hit_rate": row(m["hit_rate"] > g["hit_rate_min"], m["hit_rate"], f"> {g['hit_rate_min']}"),
@@ -246,8 +247,8 @@ def gate(m: dict, m_2x: dict, dsr: float, regimes: dict, g: dict) -> dict[str, d
         "trades": row(m["trades"] >= g["min_trades"], m["trades"], f">= {g['min_trades']}"),
         "sharpe_2x_costs": row(m_2x["sharpe"] > g["sharpe_2x_costs_min"], m_2x["sharpe"], f"> {g['sharpe_2x_costs_min']}"),
         "deflated_sharpe": row(dsr > g["deflated_sharpe_prob_min"], dsr, f"> {g['deflated_sharpe_prob_min']}"),
-        "worst_regime": row(worst >= -0.2 and top_share <= 0.6, {"worst_avg_r": worst, "top_pnl_share": top_share},
-                            "worst regime avg R >= -0.2 and no regime > 60% of P&L"),
+        "worst_regime": row(worst is not None and worst >= -0.2 and top_share <= 0.6, {"worst_avg_r": worst, "top_pnl_share": top_share},
+                            "a regime with 10+ trades exists, worst regime avg R >= -0.2, no regime > 60% of P&L"),
     }
 
 

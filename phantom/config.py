@@ -44,11 +44,17 @@ class _Redact(logging.Filter):
         super().__init__()
         self.secrets = [s for s in secrets if s and len(s) >= 6]
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
+    def _scrub(self, text: str) -> str:
         for s in self.secrets:
-            msg = msg.replace(s, "[REDACTED]")
-        record.msg, record.args = msg, None
+            text = text.replace(s, "[REDACTED]")
+        return text
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg, record.args = self._scrub(record.getMessage()), None
+        if record.exc_info and not record.exc_text:
+            record.exc_text = self._scrub(logging.Formatter().formatException(record.exc_info))
+        elif record.exc_text:
+            record.exc_text = self._scrub(record.exc_text)
         return True
 
 

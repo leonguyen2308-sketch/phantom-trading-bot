@@ -14,6 +14,7 @@ class Prepared:
     implied_price: float  # USD per BTC
     price_impact_bps: float
     payload: Any = None
+    worst_price: float | None = None  # worst fill the transaction allows (buy: highest; sell: lowest)
 
 
 @dataclass

@@ -65,3 +65,9 @@ def test_bad_quote_is_vetoed(tmp_path):
     ks = KillSwitch(tmp_path / "k.json")
     assert any("price" in x for x in pre_trade_vetoes(10.0, healthy(), LIMITS, ks, price_deviation_bps=100, price_impact_bps=0))
     assert any("impact" in x for x in pre_trade_vetoes(10.0, healthy(), LIMITS, ks, price_deviation_bps=0, price_impact_bps=80))
+
+
+def test_corrupt_kill_file_fails_closed(tmp_path):
+    p = tmp_path / "kill.json"
+    p.write_text("{not json")
+    assert KillSwitch(p).tripped

@@ -30,11 +30,11 @@ class PaperBroker:
 
     def prepare_buy(self, usd: float, market_price: float) -> Prepared:
         px = market_price * (1 + self.slip)
-        return Prepared("buy", usd, usd * (1 - self.fee) / px, px, self.slip * 1e4)
+        return Prepared("buy", usd, usd * (1 - self.fee) / px, px, self.slip * 1e4, worst_price=px)
 
     def prepare_sell(self, btc: float, market_price: float) -> Prepared:
         px = market_price * (1 - self.slip)
-        return Prepared("sell", btc, btc * px * (1 - self.fee), px, self.slip * 1e4)
+        return Prepared("sell", btc, btc * px * (1 - self.fee), px, self.slip * 1e4, worst_price=px)
 
     def execute(self, p: Prepared) -> Fill:
         ref = f"paper-{int(time.time() * 1000)}"

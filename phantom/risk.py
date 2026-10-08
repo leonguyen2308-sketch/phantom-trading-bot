@@ -29,9 +29,12 @@ class KillSwitch:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text())
-        except (FileNotFoundError, json.JSONDecodeError):
+            data = json.loads(self.path.read_text())
+            return data if isinstance(data, dict) else {"tripped": True, "reason": "kill switch file is unreadable"}
+        except FileNotFoundError:
             return {"tripped": False}
+        except (OSError, ValueError):  # corrupt or half-written: fail closed
+            return {"tripped": True, "reason": "kill switch file is unreadable"}
 
     @property
     def tripped(self) -> bool:
@@ -41,15 +44,19 @@ class KillSwitch:
     def reason(self) -> str:
         return self._read().get("reason", "")
 
-    def trip(self, reason: str) -> None:
+    def _write(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"tripped": True, "reason": reason, "at": int(time.time())}))
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data))
+        tmp.replace(self.path)  # atomic: never leaves a half-written file
+
+    def trip(self, reason: str) -> None:
+        self._write({"tripped": True, "reason": reason, "at": int(time.time())})
 
     def reset(self, confirm: str) -> None:
         if confirm != "RESET":
             raise PermissionError("Kill switch reset needs the typed confirmation RESET")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"tripped": False, "reset_at": int(time.time())}))
+        self._write({"tripped": False, "reset_at": int(time.time())})
 
 
 def kill_trigger(s: AccountState, limits: RiskLimits) -> str | None:

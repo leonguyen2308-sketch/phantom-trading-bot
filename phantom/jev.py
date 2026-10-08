@@ -6,6 +6,7 @@ by snapshot hash so backtests are reproducible and repeat calls are free.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import time
@@ -83,13 +84,14 @@ class TypeSafeJev:
         self.client = TypeSafeClient(model=model, timeout=timeout, retry=RetryPolicy(max_retries=1))
         self.model = model or "default"
         self.questions = questions(cfg)
+        self.questions_hash = hashlib.sha256(json.dumps(self.questions, sort_keys=True).encode()).hexdigest()[:12]
         self.recalibrate_tp = recalibrate_tp
         Path(cache_path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(cache_path), check_same_thread=False)
         self.db.execute("CREATE TABLE IF NOT EXISTS cache (k TEXT PRIMARY KEY, answers TEXT)")
 
     def _key(self, snap: dict) -> str:
-        return f"{self.model}|{SCHEMA_VERSION}|{snapshot_hash(snap)}"
+        return f"{self.model}|{SCHEMA_VERSION}|{self.questions_hash}|{snapshot_hash(snap)}"
 
     def ask(self, snap: dict, use_cache: bool = True) -> tuple[JevView, dict, float]:
         key = self._key(snap)

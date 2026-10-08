@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY, mode TEXT, entry_t INTEGER, entry REAL, qty REAL, stop REAL, tp REAL, prob REAL,
-  risk_usd REAL, kelly_risk REAL, entry_ref TEXT, exit_t INTEGER, exit REAL, reason TEXT, pnl REAL, r REAL, exit_ref TEXT
+  risk_usd REAL, kelly_risk REAL, entry_ref TEXT, exit_t INTEGER, exit REAL, reason TEXT, pnl REAL, r REAL, exit_ref TEXT,
+  strategy_version TEXT
 );
 CREATE TABLE IF NOT EXISTS equity (t INTEGER, mode TEXT, v REAL);
 CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
@@ -28,6 +29,9 @@ class Journal:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(trades)")}
+        if "strategy_version" not in cols:
+            self.db.execute("ALTER TABLE trades ADD COLUMN strategy_version TEXT")
 
     # ---- key/value state (position, peak equity, ...) ----
     def get(self, k: str, default=None):
@@ -76,7 +80,7 @@ class Journal:
 
     # ---- reads ----
     def calibration_samples(self, mode: str | None = None, candidates_only: bool = True) -> tuple[list[float], list[int]]:
-        q = "SELECT tp_prob, tp_label FROM decisions WHERE tp_label IS NOT NULL"
+        q = "SELECT tp_prob, tp_label FROM decisions WHERE tp_label >= 0"
         args: list = []
         if candidates_only:
             q += " AND candidate=1"
@@ -86,8 +90,12 @@ class Journal:
         rows = self.db.execute(q, args).fetchall()
         return [r[0] for r in rows], [r[1] for r in rows]
 
-    def closed_trades(self, mode: str) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT * FROM trades WHERE mode=? AND exit_t IS NOT NULL ORDER BY exit_t", (mode,)).fetchall()
+    def closed_trades(self, mode: str, version: str | None = None) -> list[sqlite3.Row]:
+        q, args = "SELECT * FROM trades WHERE mode=? AND exit_t IS NOT NULL", [mode]
+        if version:
+            q += " AND strategy_version=?"
+            args.append(version)
+        return self.db.execute(q + " ORDER BY exit_t", args).fetchall()
 
     def recent_decisions(self, mode: str, n: int = 60) -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM decisions WHERE mode=? ORDER BY id DESC LIMIT ?", (mode, n)).fetchall()

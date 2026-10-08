@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from phantom.journal import Journal
 
 KILL_PATHS = ("drawdown", "api_errors", "position_mismatch", "manual")
 MIN_PAPER_DAYS = 14
+MAX_HOLDOUT_RUNS = 3
+KILL_TEST_MAX_AGE = 7 * 86_400
 MIN_PAPER_TRADES = 20
 HIT_RATE_TOLERANCE = 0.10
 
@@ -63,14 +66,17 @@ def go_live_report(state_dir: str | Path = "state", reports_dir: str | Path = "r
     items: list[Item] = []
 
     gate = _load(reports_dir / "gate.json")
-    gate_ok = bool(gate and gate.get("passed") and gate.get("strategy_version") == strat.version)
-    items.append(Item("Did this strategy version pass the backtest gate out of sample?", gate_ok,
-                      "passed" if gate_ok else "no passing gate report for this strategy version (run: python -m phantom backtest)"))
+    gate_ok = bool(gate and gate.get("passed") and gate.get("strategy_version") == strat.version and gate.get("jev")
+                   and int(gate.get("holdout_runs", 99)) <= MAX_HOLDOUT_RUNS and gate.get("jev_cutoff") not in (None, "None"))
+    detail = "passed with Jev, out of sample and on the holdout"
+    if not gate_ok:
+        detail = ("needs a passing report for this strategy version, run WITH Jev (live trades use Jev), with jev_training_cutoff set, "
+                  f"graded on the holdout no more than {MAX_HOLDOUT_RUNS} times (run: python -m phantom backtest --jev --holdout)")
+    items.append(Item("Did this strategy version pass the backtest gate out of sample?", gate_ok, detail))
 
     j = Journal(state_dir / "journal.sqlite")
-    trades = j.closed_trades("paper")
-    first = j.first_decision_time("paper")
-    days = 0 if not first or not trades else (trades[-1]["exit_t"] - first) / 86_400
+    trades = j.closed_trades("paper", version=strat.version)  # only paper trades of the version being promoted
+    days = 0 if not trades else (trades[-1]["exit_t"] - trades[0]["entry_t"]) / 86_400
     paper_hit = sum(1 for t in trades if t["pnl"] > 0) / len(trades) if trades else 0.0
     bt_hit = (gate or {}).get("oos", {}).get("hit_rate")
     match = (days >= MIN_PAPER_DAYS and len(trades) >= MIN_PAPER_TRADES and bt_hit is not None
@@ -81,9 +87,11 @@ def go_live_report(state_dir: str | Path = "state", reports_dir: str | Path = "r
                       f"(tolerance {HIT_RATE_TOLERANCE:.0%})"))
 
     kt = _load(state_dir / "kill_tests.json") or {}
+    fresh = kt.get("_meta", {}).get("risk_sha256") == file_sha256(risk_path) and time.time() - kt.get("_meta", {}).get("at", 0) < KILL_TEST_MAX_AGE
     fired = [p for p in KILL_PATHS if kt.get(p, {}).get("ok")]
-    items.append(Item("Did the kill switch fire in testing, through every trigger?", len(fired) == len(KILL_PATHS),
-                      f"fired: {', '.join(fired) or 'none'}; required: {', '.join(KILL_PATHS)} (run: python -m phantom test-kill)"))
+    items.append(Item("Did the kill switch fire in testing, through every trigger?", fresh and len(fired) == len(KILL_PATHS),
+                      f"fired: {', '.join(fired) or 'none'}; required: {', '.join(KILL_PATHS)}; "
+                      f"{'recent, with these limits' if fresh else 'must be re-run within 7 days and after any limit change'} (run: python -m phantom test-kill)"))
 
     approved = (state_dir / "risk_approved.sha256")
     limits_ok = approved.exists() and approved.read_text().strip() == file_sha256(risk_path)

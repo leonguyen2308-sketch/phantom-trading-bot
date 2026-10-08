@@ -72,10 +72,13 @@ def cmd_run(mode: str, port: int) -> None:
     if mode == "live":
         report = go_live_report(STATE, REPORTS, RISK, STRATEGY)
         print(report.text())
-        if not report.ok:
-            sys.exit(1)
-        if os.environ.get("LIVE_TRADING") != "yes":
-            sys.exit("Go-live checks pass, but LIVE_TRADING=yes is not set in .env. Set it to trade real money.")
+        open_live = journal.get("position:live") is not None
+        if not report.ok or os.environ.get("LIVE_TRADING") != "yes":
+            if not open_live:
+                sys.exit(1 if not report.ok else "Go-live checks pass, but LIVE_TRADING=yes is not set in .env. Set it to trade real money.")
+            # Never abandon an open position: start halted and sell it.
+            kill.trip("Live checks no longer pass while a live position is open; selling it")
+            log.warning("Live checks fail with an open live position: starting halted to sell it.")
         need("PHANTOM_BOT_PRIVATE_KEY", "PHANTOM_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL")
         from phantom.execution.jupiter import JupiterBroker
         from phantom.wallet import load_keypair
@@ -98,7 +101,8 @@ def cmd_run(mode: str, port: int) -> None:
 
     def trip(reason: str) -> None:
         with lock:
-            bot.trip(reason)
+            if not bot.kill.tripped:
+                bot.trip(reason)
 
     serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r), lock), port)
     log.info("Dashboard: http://localhost:%d", port)
@@ -112,24 +116,39 @@ def cmd_run(mode: str, port: int) -> None:
         alerts.listen({"/status": status, "/kill": lambda: (trip("Telegram /kill"), "Kill switch fired. Position sold; trading halted.")[1]})
         bot._alert(f"Bot started in {mode.upper()} mode. Send /status or /kill.")
 
-    g = cfg.timeframe_minutes * 60
-    while True:
-        next_close = (int(time.time()) // g + 1) * g + 5
-        while time.time() < next_close:
-            if file_sha256(RISK) != risk_hash:
-                trip("config/risk.yaml changed while running")
-            try:
-                price = market.ticker()
-                with lock:
-                    bot.check_exits(price)
-            except Exception as e:
-                with lock:
-                    bot._api_error(f"ticker: {e}")
-            time.sleep(15)
-        with lock:
-            row = bot.on_candle()
-        if row:
-            log.info("%s %s: %s", datetime.fromtimestamp(row["t"], timezone.utc).strftime("%H:%M"), row["action"], row["note"])
+    ticker_errors = 0
+    with lock:
+        try:
+            bot._equity(bot.last_price or market.ticker())  # read the wallet once so the dashboard has numbers
+        except Exception as e:
+            log.warning("Startup wallet read failed: %s", e)
+    while True:  # every 15 s: limits file, live price -> stops/take-profit/kill, then any newly closed candle
+        try:
+            changed = not RISK.exists() or file_sha256(RISK) != risk_hash
+        except OSError:
+            changed = True
+        if changed:
+            trip("config/risk.yaml changed or disappeared while running")
+        price = None
+        try:
+            price = market.ticker()
+            ticker_errors = 0
+        except Exception as e:
+            ticker_errors += 1
+            log.warning("Price check failed (%d in a row): %s", ticker_errors, type(e).__name__)
+            if ticker_errors >= limits.max_consecutive_api_errors:
+                trip(f"No live price for {ticker_errors} checks in a row")
+        try:
+            with lock:
+                bot.check_exits(price)
+                row = bot.on_candle()  # returns None until a new candle has closed and been published
+            if row:
+                log.info("%s %s: %s", datetime.fromtimestamp(row["t"], timezone.utc).strftime("%H:%M"), row["action"], row["note"])
+        except Exception as e:  # never die with a position open: log, count, keep watching
+            log.exception("Loop error")
+            with lock:
+                bot._api_error(f"loop: {type(e).__name__}: {e}")
+        time.sleep(15)
 
 
 # ---------------------------------------------------------------- backtest
@@ -167,9 +186,9 @@ def cmd_backtest(days: int, use_jev: bool, holdout: bool, fee_bps: float, slippa
     trials.append({"at": int(time.time()), "version": cfg.version, "jev": use_jev, "oos_sharpe": m["oos"]["sharpe"]})
     STATE.mkdir(exist_ok=True)
     trials_path.write_text(json.dumps(trials, indent=1))
-    dsr = deflated_sharpe_prob(m["oos"], [t["oos_sharpe"] for t in trials])
+    dsr = deflated_sharpe_prob(m["oos"], [t["oos_sharpe"] for t in trials if t["jev"] == use_jev])
     regimes = regime_breakdown(res["oos"].trades)
-    checks = gate(m["oos"], m2, dsr, regimes, cfg.gate)
+    checks = gate(m["oos"], m2, dsr, regimes, cfg.gate, killed=res["oos"].killed)
     oos_ok = all(c["ok"] for c in checks.values()) and not notes
 
     hold_m = None
@@ -182,7 +201,8 @@ def cmd_backtest(days: int, use_jev: bool, holdout: bool, fee_bps: float, slippa
     passed = oos_ok and hold_ok
 
     REPORTS.mkdir(exist_ok=True)
-    report = {"strategy_version": cfg.version, "jev": use_jev, "passed": passed, "costs": asdict(costs), "trials": len(trials),
+    holdout_runs = sum(1 for line in open(STATE / "holdout_access.log") if f"version={cfg.version} " in line) if (STATE / "holdout_access.log").exists() else 0
+    report = {"strategy_version": cfg.version, "jev": use_jev, "passed": passed, "holdout_runs": holdout_runs, "jev_cutoff": str(cfg.jev_training_cutoff), "costs": asdict(costs), "trials": len(trials),
               "dev": m["dev"], "oos": m["oos"], "oos_2x_costs": m2, "deflated_sharpe_prob": dsr, "checks": checks,
               "regimes": regimes, "holdout": hold_m, "notes": notes, "killed_in_oos": res["oos"].killed,
               "periods": {k: [datetime.fromtimestamp(cs[0].start, timezone.utc).date().isoformat(),
@@ -257,8 +277,9 @@ def cmd_test_kill() -> None:
     drill("position_mismatch", mismatch)
     drill("manual", lambda bot, market: bot.trip("manual /kill drill"))
     STATE.mkdir(exist_ok=True)
+    results["_meta"] = {"at": int(time.time()), "risk_sha256": file_sha256(RISK)}
     (STATE / "kill_tests.json").write_text(json.dumps(results, indent=1))
-    print("All paths fired." if all(r["ok"] for r in results.values()) else "Some paths FAILED. Do not go live.")
+    print("All paths fired." if all(r["ok"] for k, r in results.items() if k != "_meta") else "Some paths FAILED. Do not go live.")
 
 
 def cmd_approve_limits() -> None:
@@ -298,7 +319,11 @@ def cmd_kill(reset: bool) -> None:
         return
     print(f"Kill switch is {'ON: ' + ks.reason if ks.tripped else 'off'}.")
     ks.reset(input("Type RESET to allow trading again: ").strip())
-    print("Kill switch reset.")
+    from phantom.journal import Journal
+    j = Journal(STATE / "journal.sqlite")
+    for m in ("paper", "live"):  # start the error count fresh, or the old count re-trips it at once
+        j.put(f"api_errors:{m}", 0)
+    print("Kill switch reset. Restart the bot (or it picks this up within 15 seconds).")
 
 
 def cmd_jev_test() -> None:
