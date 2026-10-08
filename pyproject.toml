@@ -1,0 +1,19 @@
+[project]
+name = "phantom-trading-bot"
+version = "0.1.0"
+description = "BTC trend-breakout bot: Jev scores, code decides, Jupiter executes from a dedicated Phantom wallet"
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27",
+  "solders>=0.21",
+  "pyyaml>=6",
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "typesafe-sdk>=0.7.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

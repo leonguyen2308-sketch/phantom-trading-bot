@@ -1,0 +1,14 @@
+# Hard limits. Code reads this file; no model may write it.
+# The bot records this file's hash when you approve it (python -m phantom approve-limits)
+# and refuses to trade if the file changes afterwards.
+
+max_position_pct: 0.20          # largest position as a share of bot-wallet equity
+max_position_usd: 100           # absolute cap per position, in USD
+max_risk_per_trade_pct: 0.005   # loss at the stop, as a share of equity
+daily_loss_limit_pct: 0.02      # blocks new entries until 00:00 UTC
+max_drawdown_pct: 0.10          # from the equity high; fires the kill switch
+max_consecutive_api_errors: 5   # fires the kill switch
+stale_data_candles: 2           # no new candle for this many intervals blocks entries
+max_price_deviation_bps: 75     # swap price vs Coinbase price; larger is refused
+max_price_impact_bps: 50        # Jupiter-reported price impact; larger is refused
+min_sol_for_fees: 0.02          # keep this much SOL for network fees

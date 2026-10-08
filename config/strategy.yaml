@@ -1,0 +1,60 @@
+# Strategy v0. NOT VALIDATED: it has not passed the backtest gate yet.
+# Opus may propose changes to this file; only the harness decides whether they pass.
+
+version: v0-unvalidated
+timeframe_minutes: 15
+
+# Breakout candidate (deterministic, before Jev is asked)
+breakout_lookback: 32        # candles in the range (8 hours)
+atr_period: 14
+min_breakout_atr: 0.0        # close above the prior range high by at least this many ATRs
+min_range_atr: 2.0           # ignore ranges narrower than this
+max_rv_ratio: 2.5            # skip when short-term vol explodes vs long-term
+
+# Exits
+stop_atr: 2.0
+take_profit_atr: 3.0
+time_stop_candles: 32
+
+# Jev thresholds: every one must pass
+thresholds:
+  regime_up_min: 0.45
+  dir_up_min: 0.50
+  pressure_min: 0.60
+  quality_min: 2.5
+  extreme_max: 0.15
+  tp_min: 0.58
+  score_min: 0.62
+
+# Weights for the combined score (sum to 1)
+weights:
+  regime: 0.15
+  direction: 0.20
+  pressure: 0.20
+  quality: 0.20
+  tp: 0.25
+
+# Sizing
+fixed_risk_pct: 0.002        # used until the calibration gate passes
+kelly:
+  p_cut: 0.58
+  p_full: 0.72
+  max_multiplier: 0.25
+
+calibration_gate:
+  min_samples: 200
+  max_ece: 0.05
+
+# Acceptance gate (out of sample, net of costs)
+gate:
+  sharpe_min: 1.5
+  max_drawdown_max: 0.15
+  hit_rate_min: 0.55
+  t_stat_min: 2.0
+  min_trades: 100
+  sharpe_2x_costs_min: 1.0
+  deflated_sharpe_prob_min: 0.95
+
+# Jev's training cutoff (YYYY-MM-DD). Only data after it counts as out of sample
+# for any version that uses Jev. Confirm from TypeSafe docs and fill in.
+jev_training_cutoff: null

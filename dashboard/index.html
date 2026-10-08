@@ -207,7 +207,7 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
   <header class="strip">
     <div class="brand">
       <h1>Phantom</h1>
-      <span class="pair">BTC/USD · 15m · Alpaca paper</span>
+      <span class="pair" id="pair">BTC · 15m · Solana via Jupiter</span>
     </div>
     <span class="pill warn" id="pill-mode"><span class="dot"></span>Paper</span>
     <span class="pill good live" id="pill-feed"><span class="dot"></span>Feed live</span>
@@ -306,14 +306,14 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
       <ul>
         <li>drawdown from the equity high reaches 10%</li>
         <li>5 API errors happen in a row</li>
-        <li>our position differs from Alpaca's</li>
-        <li>you send <span class="mono">/kill</span> on Telegram</li>
+        <li>the bot's position differs from the wallet balance</li>
+        <li>you send <span class="mono">/kill</span> on Telegram or run <span class="mono">python -m phantom kill</span></li>
       </ul>
       <div class="btns">
         <button class="danger" id="btn-kill" type="button">Test kill switch</button>
         <button id="btn-reset" type="button" hidden>Reset (demo only)</button>
       </div>
-      <p class="gate" id="kill-note">On the real bot, reset happens on your Mac with a command, never from this page.</p>
+      <p class="gate" id="kill-note">On the real bot, reset happens on your Mac with <span class="mono">python -m phantom reset</span>, never from this page.</p>
     </section>
     </div>
   </div>
@@ -506,9 +506,10 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
   // ---------- rendering ----------
   function renderKpis() {
     const m = mtm();
-    const tot = (m - CFG.startEquity) / CFG.startEquity;
+    const base = S.live ? (S.eq.length ? S.eq[0].v : m) : CFG.startEquity;
+    const tot = (m - base) / base;
     $("k-eq").textContent = fmtUsd(m);
-    $("k-eq-sub").innerHTML = '<span class="' + (tot >= 0 ? "up" : "down") + '">' + fmtPct(tot) + "</span> since start";
+    $("k-eq-sub").innerHTML = '<span class="' + (tot >= 0 ? "up" : "down") + '">' + fmtPct(tot) + "</span> " + (S.live ? "over 7 days" : "since start");
     const day = m - S.dayStart;
     $("k-day").innerHTML = '<span class="' + (day >= 0 ? "up" : "down") + '">' + fmtUsd(day, true) + "</span>";
     $("k-day-sub").textContent = fmtPct(day / S.dayStart) + " · limit −2.00%";
@@ -522,7 +523,7 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
     $("k-lat").textContent = Math.round(avg) + " ms";
     $("k-lat-sub").textContent = "≈ $0.00003 per decision";
     $("k-px").textContent = S.price.toLocaleString("en-US", { maximumFractionDigits: 0 });
-    $("k-px-sub").textContent = "ATR " + S.atr.toFixed(0) + " · " + fmtTime(S.t);
+    $("k-px-sub").textContent = "ATR " + (S.atr || 0).toFixed(0) + " · " + (S.t ? fmtTime(S.t) : "waiting for first candle");
 
     const kp = $("pill-kill");
     kp.className = "pill " + (S.killed ? "crit" : "good");
@@ -531,11 +532,12 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
     fp.className = "pill " + (S.paused ? "" : "good live");
     fp.lastChild.textContent = S.paused ? "Feed paused" : "Feed live";
     const n = S.calib.length;
-    $("pill-sizing").lastChild.textContent = n >= CFG.calibNeed ? "Kelly ready for review" : "Kelly off · " + n + "/" + CFG.calibNeed;
+    $("pill-sizing").lastChild.textContent = S.live ? (S.kellyOn ? "Kelly on" : "Kelly off · " + n + "/" + CFG.calibNeed)
+      : (n >= CFG.calibNeed ? "Kelly ready for review" : "Kelly off · " + n + "/" + CFG.calibNeed);
     $("halted").hidden = !S.killed;
     if (S.killed) $("halted").firstElementChild.textContent = "Trading halted. " + S.killReason + " The kill switch cancelled all orders and sold the position. Only a manual reset turns trading back on.";
     $("btn-kill").hidden = S.killed;
-    $("btn-reset").hidden = !S.killed;
+    $("btn-reset").hidden = !S.killed || S.live;
   }
 
   function renderLimits() {
@@ -570,7 +572,7 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
       kv("Side", "Long " + p.qty.toFixed(4) + " BTC") +
       kv("Open P&L", '<span class="' + (upnl >= 0 ? "up" : "down") + '">' + fmtUsd(upnl, true) + " (" + (ur >= 0 ? "+" : "") + ur.toFixed(2) + "R)</span>") +
       kv("Entry", p.entry.toFixed(0)) + kv("Last", S.price.toFixed(0)) +
-      kv("Stop (on Alpaca)", p.stop.toFixed(0)) + kv("Take-profit", p.tp.toFixed(0)) +
+      kv("Stop (watched by bot)", p.stop.toFixed(0)) + kv("Take-profit", p.tp.toFixed(0)) +
       kv("P(TP first)", p.prob.toFixed(2)) + kv("¼ Kelly says", (p.kellyRisk * 100).toFixed(1) + "% → limit 0.5%") +
       kv("Risk at stop", fmtUsd(p.riskUsd)) + kv("Candles held", p.bars + " of " + CFG.timeStopBars) +
       "</div>";
@@ -607,6 +609,11 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
     return out;
   }
 
+  function axisUsd(v, step) {
+    if (step >= 100) return (v / 1000).toFixed(step >= 1000 ? 0 : 1) + "k";
+    return v.toLocaleString("en-US", { minimumFractionDigits: step < 1 ? 2 : 0, maximumFractionDigits: step < 1 ? 2 : 0 });
+  }
+
   function renderEquity() {
     const box = $("eq-chart");
     const W = Math.max(300, box.clientWidth), H = Math.round(clamp(W * 0.36, 200, 280));
@@ -620,7 +627,7 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
     const ticks = niceTicks(lo, hi, 4);
     let g = "";
     g += '<g class="grid">' + ticks.map(v => '<line x1="' + m.l + '" x2="' + (W - m.r) + '" y1="' + y(v).toFixed(1) + '" y2="' + y(v).toFixed(1) + '"></line>').join("") + "</g>";
-    g += '<g class="axis">' + ticks.map(v => '<text x="' + (m.l - 8) + '" y="' + (y(v) + 4).toFixed(1) + '" text-anchor="end">' + (v / 1000).toFixed(1) + "k</text>").join("");
+    g += '<g class="axis">' + ticks.map(v => '<text x="' + (m.l - 8) + '" y="' + (y(v) + 4).toFixed(1) + '" text-anchor="end">' + axisUsd(v, ticks[1] - ticks[0]) + "</text>").join("");
     const days = [];
     data.forEach((d, i) => { const dt = new Date(d.t); if (dt.getUTCHours() === 0 && dt.getUTCMinutes() === 0) days.push(i); });
     const every = Math.ceil(days.length / Math.max(2, Math.floor(W / 110)));
@@ -694,10 +701,15 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
 
     // Brier table: TP-before-stop is live from the sample trades; the rest are static examples
     const n = S.calib.length;
+    if (!n) {
+      $("brier").innerHTML = '<tr><td colspan="4" style="font-family:var(--font-body);color:var(--fg-3)">No resolved decisions yet. Each one resolves 8 hours after Jev scores it.</td></tr>';
+      $("gate").innerHTML = "Kelly sizing stays off until <b>" + CFG.calibNeed + "</b> resolved breakout decisions pass the calibration gate.";
+      return;
+    }
     const brier = S.calib.reduce((a, c) => a + (c.p - c.y) ** 2, 0) / n;
     const ybar = S.calib.reduce((a, c) => a + c.y, 0) / n;
     const base = ybar * (1 - ybar);
-    const rows = [
+    const rows = S.live ? [["TP before stop", brier, base]] : [
       ["TP before stop", brier, base],
       ["Buying pressure", 0.231, 0.249],
       ["Direction", 0.236, 0.250],
@@ -705,13 +717,14 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
       ["Regime", 0.412, 0.468]
     ];
     $("brier").innerHTML = rows.map(([q, b, br]) => {
-      const sk = 1 - b / br;
-      return "<tr><td style=\"font-family:var(--font-body)\">" + q + "</td><td>" + b.toFixed(3) + "</td><td>" + br.toFixed(3) + '</td><td class="' + (sk > 0 ? "up" : "down") + '">' + (sk >= 0 ? "+" : "−") + Math.abs(sk * 100).toFixed(1) + "%</td></tr>";
+      const sk = br > 0 ? 1 - b / br : null;
+      const skCell = sk === null ? "<td>–</td>" : '<td class="' + (sk > 0 ? "up" : "down") + '">' + (sk >= 0 ? "+" : "−") + Math.abs(sk * 100).toFixed(1) + "%</td>";
+      return "<tr><td style=\"font-family:var(--font-body)\">" + q + "</td><td>" + b.toFixed(3) + "</td><td>" + br.toFixed(3) + "</td>" + skCell + "</tr>";
     }).join("");
     const avgP = S.calib.reduce((a, c) => a + c.p, 0) / n;
     $("gate").innerHTML = "Lower Brier is better; skill is the improvement over always guessing the base rate. On average Jev said <b>" + avgP.toFixed(2) + "</b> and trades won <b>" + ybar.toFixed(2) + "</b>" +
       (avgP - ybar > 0.015 ? ", so it runs a little <b>overconfident</b>; recalibration will correct that in code." : ".") +
-      " Kelly sizing stays off until <b>" + CFG.calibNeed + "</b> resolved trades pass the calibration gate (now <b>" + n + "</b>).";
+      " Kelly sizing stays off until <b>" + CFG.calibNeed + "</b> resolved decisions pass the calibration gate (now <b>" + n + "</b>).";
   }
 
   function render() {
@@ -719,18 +732,55 @@ td.note { font-family: var(--font-body); color: var(--fg-2); white-space: normal
   }
 
   // ---------- boot ----------
-  for (let i = 0; i < 6 * 96; i++) step();
-  render();
-
-  setInterval(tick, 3000);
+  // Served by the bot (python -m phantom paper|live): show its real state. Anywhere else: run the sample simulator.
+  let armed = 0;
+  function applyLive(d) {
+    Object.assign(S, d, { live: true });
+    CFG.calibNeed = d.calibNeed; CFG.timeStopBars = d.timeStopBars;
+    Object.assign(CFG.lim, { dailyLoss: d.limits.dailyLoss, maxDD: d.limits.maxDD, maxPos: d.limits.maxPos, apiErr: d.limits.apiErr });
+    S.price = S.price || (S.tape[0] && S.tape[0].close) || 0;
+  }
+  function poll() {
+    fetch("/api/state", { cache: "no-store" }).then(r => r.json()).then(d => { S.paused = false; applyLive(d); render(); })
+      .catch(() => { S.paused = true; renderKpis(); });
+  }
+  function startLive(d) {
+    applyLive(d);
+    const live = d.mode === "live";
+    $("pill-mode").className = "pill " + (live ? "crit" : "warn");
+    $("pill-mode").lastChild.textContent = live ? "Live money" : "Paper";
+    document.querySelector(".notice").innerHTML = "<span><strong>Connected to the bot on this Mac.</strong> " +
+      (live ? "Trading real money from the bot wallet." : "Paper trading: no real money moves.") + " Updates every 5 seconds.</span>";
+    $("btn-kill").textContent = "Kill switch";
+    render();
+    setInterval(poll, 5000);
+  }
+  function startSample() {
+    for (let i = 0; i < 6 * 96; i++) step();
+    render();
+    setInterval(tick, 3000);
+  }
   function tick() { if (!S.paused) { step(); render(); } }
+  fetch("/api/state", { cache: "no-store" })
+    .then(r => (r.ok ? r.json() : Promise.reject()))
+    .then(d => (d && d.mode && Array.isArray(d.tape) ? startLive(d) : startSample()))
+    .catch(startSample);
 
-  $("btn-pause").addEventListener("click", () => {
+  $("btn-pause") && $("btn-pause").addEventListener("click", () => {
     S.paused = !S.paused;
     $("btn-pause").textContent = S.paused ? "Resume" : "Pause";
     renderKpis();
   });
-  $("btn-kill").addEventListener("click", () => { triggerKill("Test fired from the dashboard."); render(); });
+  $("btn-kill").addEventListener("click", () => {
+    if (!S.live) { triggerKill("Test fired from the dashboard."); render(); return; }
+    if (Date.now() - armed > 5000) {
+      armed = Date.now();
+      $("btn-kill").textContent = "Click again to sell and halt";
+      setTimeout(() => { if (!S.killed) $("btn-kill").textContent = "Kill switch"; }, 5000);
+      return;
+    }
+    fetch("/api/kill", { method: "POST" }).then(poll);
+  });
   $("btn-reset").addEventListener("click", () => { S.killed = false; S.killReason = ""; S.peak = mtm(); render(); });
 
   let rz;
