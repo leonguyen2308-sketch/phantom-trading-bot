@@ -1,0 +1,722 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pansol</title>
+<meta name="description" content="Pansol, the panda meme coin on Solana. Launching 15 October 2026.">
+<meta property="og:title" content="Pansol · Launching 15.10.2026">
+<meta property="og:description" content="The panda meme coin on Solana. Join before launch day.">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="assets/pansol-coin.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;700&family=Bowlby+One&family=Martian+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: the page is the coin's own black. Coin and the giant day count share the hero;
+   a white "panda stripe" marquee splits the page; everything else stays quiet. */
+:root {
+  --ink: #000;            /* page = the coin image's background */
+  --paper: #fff;          /* text */
+  --mute: #a19d94;        /* secondary text, warm grey toward the coin gold */
+  --line: #2a2723;        /* hairlines and quiet surfaces */
+  --gold: #f3ac30;        /* sampled from the coin rim */
+  --sol-teal: #14f1d9;    /* Solana mark on the cap */
+  --sol-purple: #9945ff;
+
+  --display: "Bowlby One", "Arial Black", Impact, sans-serif;
+  --body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --gutter: clamp(16px, 4vw, 48px);
+  --max: 1180px;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { background: var(--ink); }
+body {
+  margin: 0;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--body);
+  font-size: 17px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+img { max-width: 100%; height: auto; display: block; }
+a { color: inherit; }
+:focus-visible { outline: 3px solid var(--gold); outline-offset: 3px; }
+
+.wrap {
+  width: 100%;
+  max-width: var(--max);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+}
+
+/* ---------- top bar ---------- */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-block: 20px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--display);
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+}
+.brand img { width: 34px; height: 34px; object-fit: cover; object-position: 50% 49%; border-radius: 50%; }
+.chain {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sol-mark { width: 16px; height: 13px; flex: none; }
+
+/* ---------- hero ---------- */
+.hero {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(8px, 3vw, 40px);
+  align-items: center;
+  padding-block: clamp(8px, 3vw, 40px) clamp(48px, 7vw, 96px);
+}
+@media (min-width: 900px) {
+  .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
+}
+
+.coin-stage {
+  position: relative;
+  justify-self: center;
+  width: min(100%, 520px);
+  perspective: 900px;
+}
+.coin-stage::before {
+  /* soft gold light behind the coin */
+  content: "";
+  position: absolute;
+  inset: 12% 8%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(243, 172, 48, 0.32), rgba(243, 172, 48, 0) 100%);
+  filter: blur(18px);
+  animation: glow 5s ease-in-out infinite;
+  pointer-events: none;
+}
+.coin-float { animation: float 6s ease-in-out infinite; }
+.coin-tilt {
+  transition: transform 0.25s ease-out;
+  transform-style: preserve-3d;
+}
+.coin-btn {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  border-radius: 50%;
+}
+/* trims the black margin above and below the coin; the artwork itself is untouched */
+.coin-btn img { width: 100%; aspect-ratio: 1290 / 1200; object-fit: cover; object-position: 50% 47%; }
+.coin-btn.flip img { animation: flip 1.1s cubic-bezier(.2, .7, .2, 1); }
+.coin-hint {
+  margin-top: 4px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+@keyframes glow { 0%, 100% { opacity: 0.75; } 50% { opacity: 1; } }
+@keyframes flip { from { transform: rotateY(0); } to { transform: rotateY(720deg); } }
+
+.hero-copy { min-width: 0; display: grid; gap: 22px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin: 0;
+}
+.wordmark {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(60px, 8.6vw, 116px);
+  line-height: 0.86;
+  letter-spacing: -0.01em;
+}
+.tagline {
+  margin: 0;
+  max-width: 34ch;
+  font-size: clamp(18px, 2vw, 21px);
+  color: var(--paper);
+}
+.tagline span { color: var(--mute); }
+
+/* countdown */
+.countdown {
+  display: grid;
+  gap: 14px;
+  padding-block: 22px;
+  border-block: 1px solid var(--line);
+}
+.days-row { display: flex; align-items: flex-end; gap: 18px; flex-wrap: wrap; }
+.days-num {
+  font-family: var(--display);
+  font-size: clamp(120px, 20vw, 220px);
+  line-height: 0.78;
+  font-variant-numeric: tabular-nums;
+}
+.days-label {
+  font-family: var(--display);
+  font-size: clamp(22px, 3vw, 34px);
+  line-height: 1;
+  padding-bottom: 6px;
+}
+.days-label small {
+  display: block;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.ticker {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--mute);
+}
+.ticker b {
+  font-weight: 600;
+  font-size: clamp(22px, 3vw, 28px);
+  letter-spacing: 0.02em;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+.launch-date {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.launch-date strong { color: var(--paper); font-weight: 600; }
+
+/* join */
+.join { display: flex; align-items: center; gap: 18px 22px; flex-wrap: wrap; }
+.join-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 30px;
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 20px;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  transition: background-color 0.18s ease, transform 0.18s ease;
+}
+.join-btn:hover { background: var(--gold); transform: translateY(-2px); }
+.join-btn:active { transform: translateY(0); }
+.join-btn svg { width: 18px; height: 18px; flex: none; }
+.join-btn[data-joined="true"] { background: var(--gold); }
+
+.count {
+  display: grid;
+  gap: 2px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.count-num {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--display);
+  font-size: 30px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+}
+.live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sol-teal);
+  box-shadow: 0 0 0 0 rgba(20, 241, 217, 0.6);
+  animation: ping 1.8s ease-out infinite;
+}
+.count[data-state="error"] .live-dot { background: var(--mute); animation: none; }
+@keyframes ping {
+  0% { box-shadow: 0 0 0 0 rgba(20, 241, 217, 0.55); }
+  100% { box-shadow: 0 0 0 10px rgba(20, 241, 217, 0); }
+}
+
+/* ---------- panda stripe ---------- */
+.stripe {
+  background: var(--paper);
+  color: var(--ink);
+  overflow: hidden;
+  border-block: 6px solid var(--ink);
+  outline: 1px solid var(--paper);
+}
+.stripe-track {
+  display: flex;
+  width: max-content;
+  animation: marquee 28s linear infinite;
+}
+.stripe-track span {
+  display: inline-flex;
+  align-items: center;
+  gap: 28px;
+  padding: 18px 14px;
+  font-family: var(--display);
+  font-size: clamp(22px, 3.4vw, 38px);
+  white-space: nowrap;
+}
+.stripe-track i { font-style: normal; color: var(--gold); -webkit-text-stroke: 1px var(--ink); }
+@keyframes marquee { to { transform: translateX(-50%); } }
+
+/* ---------- panda section ---------- */
+.panda {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(28px, 5vw, 64px);
+  align-items: center;
+  padding-block: clamp(64px, 9vw, 120px);
+}
+@media (min-width: 860px) {
+  .panda { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr); }
+}
+.panda figure { margin: 0; }
+.panda figure img { width: 100%; border-radius: 6px; }
+.panda figcaption {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+}
+.panda-copy { min-width: 0; display: grid; gap: 22px; }
+.panda h2, .final h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: clamp(38px, 5.4vw, 64px);
+  line-height: 0.98;
+  text-wrap: balance;
+}
+.panda p { margin: 0; max-width: 58ch; color: var(--mute); }
+.panda p strong { color: var(--paper); font-weight: 500; }
+
+.facts { margin: 8px 0 0; display: grid; border-top: 1px solid var(--line); }
+.facts div {
+  display: grid;
+  grid-template-columns: minmax(0, 11rem) minmax(0, 1fr);
+  gap: 16px;
+  padding-block: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.facts dt {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--mute);
+  padding-top: 4px;
+}
+.facts dd { margin: 0; font-weight: 500; overflow-wrap: anywhere; }
+.facts dd a { text-decoration-color: var(--gold); text-underline-offset: 4px; }
+.facts dd a:hover { color: var(--gold); }
+
+/* ---------- final call ---------- */
+.final {
+  display: grid;
+  justify-items: start;
+  gap: 26px;
+  padding-block: clamp(24px, 4vw, 48px) clamp(56px, 8vw, 104px);
+}
+.final h2 { max-width: 16ch; }
+.final h2 em { font-style: normal; color: var(--gold); }
+
+/* ---------- footer ---------- */
+footer {
+  padding-block: 28px 40px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--mute);
+}
+footer .wrap { display: grid; gap: 10px; }
+footer p { margin: 0; max-width: 80ch; }
+
+/* ---------- confetti ---------- */
+#confetti {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coin-float, .coin-stage::before, .stripe-track, .live-dot { animation: none; }
+  .coin-btn.flip img { animation: none; }
+  .coin-tilt, .join-btn { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="wrap bar">
+  <a class="brand" href="#top" aria-label="Pansol home">
+    <img src="assets/pansol-coin.jpg" alt="" width="34" height="34">
+    PANSOL
+  </a>
+  <span class="chain">
+    <svg class="sol-mark" viewBox="0 0 32 26" aria-hidden="true">
+      <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14f1d9"/><stop offset="1" stop-color="#9945ff"/></linearGradient></defs>
+      <path fill="url(#sg)" d="M6 0h26l-6 6H0zM0 10h26l6 6H6zM6 20h26l-6 6H0z"/>
+    </svg>
+    Built on Solana
+  </span>
+</header>
+
+<main id="top">
+  <section class="wrap hero">
+    <div class="coin-stage" id="coinStage">
+      <div class="coin-float">
+        <div class="coin-tilt" id="coinTilt">
+          <button class="coin-btn" id="coinBtn" type="button" aria-label="Flip the Pansol coin">
+            <img src="assets/pansol-coin.jpg" alt="Pansol coin: gold Panda Meme Coin with a panda in a Solana cap and sunglasses" width="1290" height="1505">
+          </button>
+        </div>
+      </div>
+      <p class="coin-hint">Tap the coin</p>
+    </div>
+
+    <div class="hero-copy">
+      <p class="eyebrow">The panda meme coin on Solana</p>
+      <h1 class="wordmark">PANSOL</h1>
+      <p class="tagline">Eat. Train. Solana. Repeat. <span>The panda goes live on 15 October 2026.</span></p>
+
+      <div class="countdown" id="countdown" aria-label="Countdown to launch">
+        <div class="days-row">
+          <span class="days-num" id="daysNum">7</span>
+          <span class="days-label"><span id="daysWord">DAYS</span><br><span id="daysTo">TO LAUNCH</span><small id="daysSub">and counting</small></span>
+        </div>
+        <div class="ticker" id="ticker">
+          <span id="tickerLabel">Drops to 6 in</span>
+          <b id="tickerTime">--:--:--</b>
+        </div>
+        <p class="launch-date">Launch day: <strong>Thursday 15 October 2026</strong> · UTC+7</p>
+      </div>
+
+      <div class="join">
+        <a class="join-btn" data-join href="https://x.com/leonguy22167603?s=11" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+          <span data-join-label>Join Pansol on X</span>
+        </a>
+        <div class="count" data-count data-state="loading" aria-live="polite">
+          <span class="count-num"><span class="live-dot" aria-hidden="true"></span><span data-count-num>…</span></span>
+          <span data-count-label>people joined</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="stripe" aria-hidden="true">
+    <div class="stripe-track">
+      <span>EAT <i>★</i> TRAIN <i>★</i> SOLANA <i>★</i> REPEAT <i>★</i> BETTER THAN YESTERDAY <i>★</i></span>
+      <span>EAT <i>★</i> TRAIN <i>★</i> SOLANA <i>★</i> REPEAT <i>★</i> BETTER THAN YESTERDAY <i>★</i></span>
+    </div>
+  </div>
+
+  <section class="wrap panda">
+    <figure>
+      <img src="assets/pansol-gym.jpg" alt="The Pansol panda lifting dumbbells in a Solana tank top and sunglasses" width="1254" height="1254" loading="lazy">
+      <figcaption>Panda power. Never skips a day.</figcaption>
+    </figure>
+    <div class="panda-copy">
+      <h2>Meet the panda.</h2>
+      <p><strong>Pansol is a community meme coin on Solana</strong>, starring a panda who shows up every single day. Black and white, gold on the outside, Solana in the eyes. Small steps, every day, until launch.</p>
+      <dl class="facts">
+        <div><dt>Network</dt><dd>Solana</dd></div>
+        <div><dt>Launch day</dt><dd>Thursday 15 October 2026</dd></div>
+        <div><dt>Contract address</dt><dd>Revealed on launch day</dd></div>
+        <div><dt>Community</dt><dd><a href="https://x.com/leonguy22167603?s=11" target="_blank" rel="noopener">@leonguy22167603 on X</a></dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="wrap final">
+    <h2 id="finalHead">Be there when the panda goes <em>live</em>.</h2>
+    <div class="join">
+      <a class="join-btn" data-join href="https://x.com/leonguy22167603?s=11" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        <span data-join-label>Join Pansol on X</span>
+      </a>
+      <div class="count" data-count data-state="loading">
+        <span class="count-num"><span class="live-dot" aria-hidden="true"></span><span data-count-num>…</span></span>
+        <span data-count-label>people joined</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Pansol is a meme coin made for fun and community. It has no intrinsic value and no promise of returns. Nothing on this page is financial advice. Never put in more than you can afford to lose, and only trust the contract address posted by the official account.</p>
+    <p>© 2026 Pansol</p>
+  </div>
+</footer>
+
+<canvas id="confetti" aria-hidden="true"></canvas>
+
+<script>
+(() => {
+  // ---- Settings: edit these if the launch details change ----
+  const CONFIG = {
+    launch: { year: 2026, month: 10, day: 15 }, // launch day
+    utcOffsetHours: 7,                          // countdown runs on Vietnam time (UTC+7)
+    counterApi: "https://abacus.jasoncameron.dev",
+    counterNamespace: "pansol-launch-2026",
+    counterKey: "joins",
+    refreshSeconds: 15,
+  };
+
+  const DAY = 86400000;
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const $ = (id) => document.getElementById(id);
+  const pad = (n) => String(n).padStart(2, "0");
+
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage blocked */ } },
+  };
+
+  // ---------- Countdown ----------
+  // Counts calendar days on launch-zone time: 15 Oct minus today's date.
+  // 8 Oct shows 7, 9 Oct shows 6, ... 15 Oct is launch day.
+  const launchDayStart = Date.UTC(CONFIG.launch.year, CONFIG.launch.month - 1, CONFIG.launch.day);
+  const offsetMs = CONFIG.utcOffsetHours * 3600000;
+
+  function tick() {
+    const local = Date.now() + offsetMs;              // "wall clock" in the launch zone, read with getUTC*
+    const today = Math.floor(local / DAY) * DAY;
+    const days = Math.round((launchDayStart - today) / DAY);
+    const msLeftToday = today + DAY - local;
+    const s = Math.max(0, Math.floor(msLeftToday / 1000));
+    const hms = `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+
+    const show = (num, word, to, sub, numSize = "") => {
+      $("daysNum").textContent = num;
+      $("daysNum").style.fontSize = numSize;
+      $("daysWord").textContent = word;
+      $("daysTo").textContent = to;
+      $("daysSub").textContent = sub;
+    };
+
+    if (days > 0) {
+      show(days, days === 1 ? "DAY" : "DAYS", "TO LAUNCH", days === 1 ? "Launch is tomorrow" : "and counting");
+      $("tickerLabel").textContent = days === 1 ? "Launch day starts in" : `Drops to ${days - 1} in`;
+      $("tickerTime").textContent = hms;
+      document.title = `Pansol · ${days} ${days === 1 ? "day" : "days"} to launch`;
+    } else if (days === 0) {
+      show("TODAY", "IS", "LAUNCH DAY", "Pansol goes live today", "clamp(72px, 12vw, 132px)");
+      $("tickerLabel").textContent = "Launch day ends in";
+      $("tickerTime").textContent = hms;
+      document.title = "Pansol · Launch day";
+    } else {
+      show("LIVE", "ON", "SOLANA", "Launched 15.10.2026", "clamp(88px, 15vw, 170px)");
+      $("ticker").hidden = true;
+      $("finalHead").innerHTML = "The panda is <em>live</em>. Come say hi.";
+      document.title = "Pansol · Live on Solana";
+      return false;
+    }
+    return true;
+  }
+
+  if (tick()) {
+    const loop = () => { if (tick()) setTimeout(loop, 1000 - (Date.now() % 1000) + 5); };
+    loop();
+  }
+
+  // ---------- Join counter ----------
+  // Every visitor who presses Join adds one to a shared counter (once per browser).
+  const JOINED_KEY = "pansol-joined";
+  const counterUrl = (op) =>
+    `${CONFIG.counterApi}/${op}/${encodeURIComponent(CONFIG.counterNamespace)}/${encodeURIComponent(CONFIG.counterKey)}`;
+  const nf = new Intl.NumberFormat("en-US");
+  let lastCount = null;
+  let joined = store.get(JOINED_KEY) === "1";
+
+  function render(state) {
+    document.querySelectorAll("[data-count]").forEach((el) => {
+      el.dataset.state = state;
+      const num = el.querySelector("[data-count-num]");
+      const label = el.querySelector("[data-count-label]");
+      if (state === "ok") {
+        num.textContent = nf.format(lastCount);
+        label.textContent = lastCount === 0 ? "Be the first to join" : lastCount === 1 ? "person joined" : "people joined";
+      } else if (state === "error" && lastCount === null) {
+        num.textContent = "–";
+        label.textContent = "Live count is offline";
+      }
+    });
+    document.querySelectorAll("[data-join]").forEach((a) => {
+      a.dataset.joined = joined ? "true" : "false";
+      a.querySelector("[data-join-label]").textContent = joined ? "You're in · Open X" : "Join Pansol on X";
+    });
+  }
+
+  async function readCount() {
+    try {
+      const res = await fetch(counterUrl("get"), { cache: "no-store" });
+      if (res.status === 404) { lastCount = 0; return render("ok"); }   // nobody has joined yet
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      if (typeof data.value === "number") {
+        lastCount = Math.max(data.value, lastCount ?? 0);
+        render("ok");
+      }
+    } catch {
+      render("error");
+    }
+  }
+
+  async function addJoin() {
+    if (lastCount !== null) { lastCount += 1; render("ok"); }       // show it right away
+    try {
+      const res = await fetch(counterUrl("hit"), { cache: "no-store", keepalive: true });
+      if (!res.ok) throw new Error(res.status);
+      const data = await res.json();
+      if (typeof data.value === "number") { lastCount = data.value; render("ok"); }
+    } catch {
+      readCount();
+    }
+  }
+
+  document.querySelectorAll("[data-join]").forEach((a) => {
+    a.addEventListener("click", (e) => {
+      // the link itself opens X in a new tab; we only count the first join per browser
+      if (!joined) {
+        joined = true;
+        store.set(JOINED_KEY, "1");
+        addJoin();
+        burst(e.clientX, e.clientY);
+      }
+      render(lastCount === null ? "loading" : "ok");
+    });
+  });
+
+  render("loading");
+  readCount();
+  setInterval(() => { if (!document.hidden) readCount(); }, CONFIG.refreshSeconds * 1000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) readCount(); });
+
+  // ---------- Coin: tilt with the pointer, flip on tap ----------
+  const stage = $("coinStage");
+  const tilt = $("coinTilt");
+  const coinBtn = $("coinBtn");
+
+  if (!reduceMotion && window.matchMedia("(hover: hover)").matches) {
+    document.addEventListener("pointermove", (e) => {
+      const r = stage.getBoundingClientRect();
+      const x = (e.clientX - (r.left + r.width / 2)) / window.innerWidth;
+      const y = (e.clientY - (r.top + r.height / 2)) / window.innerHeight;
+      tilt.style.transform = `rotateY(${(x * 22).toFixed(2)}deg) rotateX(${(-y * 18).toFixed(2)}deg)`;
+    });
+  }
+  coinBtn.addEventListener("click", (e) => {
+    if (reduceMotion) return;
+    coinBtn.classList.remove("flip");
+    void coinBtn.offsetWidth;                         // restart the animation
+    coinBtn.classList.add("flip");
+    const r = coinBtn.getBoundingClientRect();
+    burst(r.left + r.width / 2, r.top + r.height / 2, 40);
+  });
+
+  // ---------- Confetti: gold, white and Solana colours ----------
+  const canvas = $("confetti");
+  const ctx = canvas.getContext("2d");
+  const colors = ["#f3ac30", "#ffffff", "#14f1d9", "#9945ff", "#ffd36b"];
+  let parts = [];
+  let raf = 0;
+
+  function burst(x, y, n = 140) {
+    if (reduceMotion) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = innerWidth * dpr;
+    canvas.height = innerHeight * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const v = 4 + Math.random() * 9;
+      parts.push({
+        x, y,
+        vx: Math.cos(a) * v,
+        vy: Math.sin(a) * v - 5,
+        s: 5 + Math.random() * 7,
+        r: Math.random() * Math.PI,
+        vr: (Math.random() - 0.5) * 0.4,
+        c: colors[(Math.random() * colors.length) | 0],
+        round: Math.random() < 0.35,
+        life: 1,
+      });
+    }
+    if (!raf) raf = requestAnimationFrame(step);
+  }
+
+  function step() {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    parts = parts.filter((p) => p.life > 0 && p.y < innerHeight + 40);
+    for (const p of parts) {
+      p.vy += 0.32; p.vx *= 0.985; p.x += p.vx; p.y += p.vy; p.r += p.vr; p.life -= 0.009;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, p.life * 1.5));
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.r);
+      ctx.fillStyle = p.c;
+      if (p.round) { ctx.beginPath(); ctx.arc(0, 0, p.s / 2, 0, Math.PI * 2); ctx.fill(); }
+      else ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2);
+      ctx.restore();
+    }
+    raf = parts.length ? requestAnimationFrame(step) : 0;
+    if (!raf) ctx.clearRect(0, 0, innerWidth, innerHeight);
+  }
+})();
+</script>
+</body>
+</html>
