@@ -31,7 +31,10 @@
     return provider();
   }
 
-  const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  // iPads ask for the desktop site, so their user agent says Macintosh; touch gives them away.
+  const isMobile = () =>
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   const openInPhantomUrl = () =>
     `https://phantom.app/ul/browse/${encodeURIComponent(location.href)}?ref=${encodeURIComponent(location.origin)}`;
   const short = (a) => (a ? `${a.slice(0, 4)}…${a.slice(-4)}` : "");
@@ -66,7 +69,7 @@
     } catch (e) {
       throw friendly(e);
     }
-    const { nonce, message } = await api("/api/auth/nonce", { method: "POST", body: { wallet } });
+    const { challenge, message } = await api("/api/auth/nonce", { method: "POST", body: { wallet } });
     let signed;
     try {
       signed = await p.signMessage(new TextEncoder().encode(message), "utf8");
@@ -74,7 +77,7 @@
       throw friendly(e);
     }
     const sig = signed && signed.signature instanceof Uint8Array ? signed.signature : new Uint8Array(signed.signature);
-    return api("/api/auth/verify", { method: "POST", body: { nonce, signature: toBase64(sig) } });
+    return api("/api/auth/verify", { method: "POST", body: { challenge, signature: toBase64(sig) } });
   }
 
   // The signed-in wallet as {wallet, isAdmin}, or null.
@@ -83,12 +86,10 @@
     return who && who.wallet ? who : null;
   }
 
+  // Throws if the server could not end the session, so the page can say so instead of pretending.
   async function signOut() {
-    try {
-      await api("/api/auth/logout", { method: "POST" });
-    } finally {
-      try { await provider()?.disconnect(); } catch { /* already disconnected */ }
-    }
+    await api("/api/auth/logout", { method: "POST" });
+    try { await provider()?.disconnect(); } catch { /* already disconnected */ }
   }
 
   // Calls back with the new address (or null) when the user switches accounts in Phantom.
@@ -122,13 +123,19 @@
     if (a >= 1 || a === 0) {
       return v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
-    const zeros = Math.floor(-Math.log10(a));          // 0.000012 -> 4 zeros after the point
+    // 4 significant digits, rounded first so 0.0000099999 counts as 0.00001
+    const [mantissa, exp] = a.toExponential(3).split("e");
+    const zeros = -Number(exp) - 1;                    // 0.000012 -> 4 zeros after the point
+    const sign = v < 0 ? "-" : "";
     if (zeros >= 4) {
-      const digits = String(Math.round(a * 10 ** (zeros + 4))).slice(0, 4).replace(/0+$/, "") || "0";
+      const digits = mantissa.replace(".", "").replace(/0+$/, "") || "0";
       const sub = String(zeros).split("").map((d) => SUB[+d]).join("");
-      return `${v < 0 ? "-" : ""}$0.0${sub}${digits}`;
+      return `${sign}$0.0${sub}${digits}`;
     }
-    return `${v < 0 ? "-" : ""}$${Number(a.toPrecision(4)).toString()}`;
+    const rounded = Number(a.toPrecision(4));
+    if (rounded >= 1) return sign + usd(rounded);
+    const text = rounded.toString();
+    return `${sign}$${/^0\.\d$/.test(text) ? text + "0" : text}`;
   }
   function amount(v) {
     if (v == null || !isFinite(v)) return "—";

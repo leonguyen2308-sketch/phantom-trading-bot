@@ -20,19 +20,21 @@ from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pansol import auth
 from pansol.chain import Chain, ChainError
-from pansol.store import Busy, Store
+from pansol.store import Store
 
 log = logging.getLogger("pansol.server")
 
 WEB = Path(__file__).resolve().parent
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
-HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+(:\d{1,5})?$")
+SITE_URL_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?$")
+LOOPBACK_RE = re.compile(r"^(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?$")
+ADMIN_LIST_LIMIT = 2000
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
@@ -48,7 +50,7 @@ class Settings:
     admin_wallets: frozenset[str] = frozenset()
     rpc_url: str = DEFAULT_RPC
     db_path: str = "state/pansol.db"
-    public_url: str = ""            # e.g. https://pansol.xyz; empty = use the address the visitor typed
+    public_urls: tuple[str, ...] = ()   # addresses the site is served at; sign-in works only on these
     pansol_mint: str | None = None  # set after launch to pin Pansol on every tracker
     watch_limit: int = 30
 
@@ -67,15 +69,25 @@ class Settings:
         if mint and not auth.parse_address(mint):
             raise ValueError(f"PANSOL_MINT: {mint!r} is not a Solana token address")
 
-        public_url = env.get("PANSOL_PUBLIC_URL", "").strip().rstrip("/")
-        if public_url and not re.match(r"^https?://[A-Za-z0-9.\-]+(:\d{1,5})?$", public_url):
-            raise ValueError("PANSOL_PUBLIC_URL must look like https://pansol.xyz (no path)")
+        urls = []
+        for part in env.get("PANSOL_PUBLIC_URL", "").split(","):
+            url = part.strip().rstrip("/").lower()
+            if not url:
+                continue
+            if not SITE_URL_RE.match(url):
+                raise ValueError(f"PANSOL_PUBLIC_URL: {part.strip()!r} must look like https://pansol.xyz (no path)")
+            urls.append(url)
+        # Hosting platforms announce the address they give the app.
+        if env.get("RAILWAY_PUBLIC_DOMAIN", "").strip():
+            urls.append("https://" + env["RAILWAY_PUBLIC_DOMAIN"].strip().lower())
+        if SITE_URL_RE.match(env.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/").lower()):
+            urls.append(env["RENDER_EXTERNAL_URL"].strip().rstrip("/").lower())
 
         return cls(
             admin_wallets=frozenset(admins),
             rpc_url=env.get("SOLANA_RPC_URL", "").strip() or DEFAULT_RPC,
             db_path=env.get("PANSOL_DB", "").strip() or "state/pansol.db",
-            public_url=public_url,
+            public_urls=tuple(dict.fromkeys(urls)),
             pansol_mint=mint,
         )
 
@@ -85,7 +97,7 @@ class WalletIn(BaseModel):
 
 
 class VerifyIn(BaseModel):
-    nonce: str = Field(max_length=64)
+    challenge: str = Field(max_length=1000)
     signature: str = Field(max_length=200)
 
 
@@ -112,25 +124,32 @@ def make_app(
     store = store or Store(settings.db_path)
     chain = chain or Chain(settings.rpc_url)
     app = FastAPI(title="Pansol", docs_url=None, redoc_url=None, openapi_url=None)
-    public = urlsplit(settings.public_url) if settings.public_url else None
+    secret = store.secret(auth.new_secret)
+    sites = {urlsplit(u).netloc: u for u in settings.public_urls}
 
     def now() -> int:
         return int(clock())
 
     def is_https(request: Request) -> bool:
-        if public:
-            return public.scheme == "https"
+        host = request.headers.get("host", "").lower()
+        if host in sites:
+            return sites[host].startswith("https://")
         forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
         return request.url.scheme == "https" or forwarded == "https"
 
     def site(request: Request) -> tuple[str, str]:
-        """The domain and URL that go into the sign-in message. Phantom warns if they differ from the page."""
-        if public:
-            return public.netloc, settings.public_url
-        host = request.headers.get("host", "")
-        if not HOST_RE.match(host):
-            raise HTTPException(400, "Bad Host header.")
-        return host, f"{'https' if is_https(request) else 'http'}://{host}"
+        """The domain and URL that go into the sign-in message.
+
+        Phantom warns when they differ from the page asking for the signature, so they must name this
+        site and never come from whatever Host header a caller sends. Only configured addresses are used;
+        with none configured, only this computer (localhost) can sign in.
+        """
+        host = request.headers.get("host", "").lower()
+        if host in sites:
+            return host, sites[host]
+        if not sites and LOOPBACK_RE.match(host):
+            return host, f"{'https' if is_https(request) else 'http'}://{host}"
+        raise HTTPException(400, "Sign-in isn't set up for this web address. Add it to PANSOL_PUBLIC_URL.")
 
     def current_wallet(request: Request) -> str | None:
         token = request.cookies.get(auth.COOKIE)
@@ -155,8 +174,7 @@ def make_app(
         # Refuse writes sent from other websites (a second lock on top of SameSite cookies).
         if request.url.path.startswith("/api/") and request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
-            allowed = {request.headers.get("host", "")} | ({public.netloc} if public else set())
-            if origin and urlsplit(origin).netloc not in allowed:
+            if origin and urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower():
                 return JSONResponse({"detail": "Requests from other websites are refused."}, status_code=403)
         response = await call_next(request)
         for key, value in SECURITY_HEADERS.items():
@@ -189,22 +207,19 @@ def make_app(
         if not wallet:
             raise HTTPException(400, "That is not a Solana wallet address.")
         domain, uri = site(request)
-        nonce, t = auth.new_nonce(), now()
-        message = auth.sign_in_message(domain, uri, wallet, nonce, t)
-        try:
-            store.add_nonce(nonce, wallet, message, t + auth.NONCE_TTL, t)
-        except Busy:
-            raise HTTPException(503, "Too many sign-ins right now. Try again in a minute.")
-        return {"nonce": nonce, "message": message}
+        challenge, message = auth.make_challenge(secret, wallet, domain, uri, now())
+        return {"challenge": challenge, "message": message}
 
     @app.post("/api/auth/verify")
     def sign_in_finish(body: VerifyIn, request: Request, response: Response):
-        pending = store.take_nonce(body.nonce, now())
+        pending = auth.open_challenge(secret, body.challenge, now())
         if not pending:
             raise HTTPException(400, "This sign-in expired. Press Connect again.")
         wallet = pending["wallet"]
         if not auth.verify(wallet, pending["message"], body.signature):
             raise HTTPException(401, "The signature does not match this wallet.")
+        if not store.use_nonce(pending["nonce"], pending["expires_at"], now()):
+            raise HTTPException(400, "This sign-in was already used. Press Connect again.")
 
         old = request.cookies.get(auth.COOKIE)
         if old:
@@ -244,7 +259,8 @@ def make_app(
             log.warning("portfolio %s: %s", wallet, e)
             raise HTTPException(502, "Couldn't reach the Solana network. Try again in a minute.")
         t = now()
-        store.save_snapshot(wallet, result["total_usd"], result["holdings"], t)
+        if result["prices_ok"]:   # never overwrite a good snapshot with a price outage's $0
+            store.save_snapshot(wallet, result["total_usd"], result["coin_count"], result["holdings"], t)
         store.touch(wallet, t)
         return result
 
@@ -269,30 +285,38 @@ def make_app(
     @app.get("/api/admin/users")
     def admin_users(request: Request):
         require_admin(request)
-        users = store.users()
+        users = store.users(limit=ADMIN_LIST_LIMIT)
         for u in users:
             u["is_admin"] = u["wallet"] in settings.admin_wallets
-        return {"stats": store.stats(now()), "users": users, "now": now()}
+        return {"stats": store.stats(now()), "users": users, "limit": ADMIN_LIST_LIMIT, "now": now()}
 
     @app.get("/api/admin/users.csv")
     def admin_users_csv(request: Request):
         require_admin(request)
-        out = io.StringIO()
-        w = csv.writer(out)
-        w.writerow(["wallet", "first_seen_utc", "last_seen_utc", "sign_ins", "portfolio_usd",
-                    "coins", "watchlist", "top_coins"])
-        for u in store.users():
-            top = "; ".join(
-                f"{h.get('symbol') or h.get('mint', '')[:6]} ${h['value_usd']:.2f}"
-                for h in u["holdings"][:5] if h.get("value_usd") is not None
-            )
-            w.writerow([_csv_cell(v) for v in (
-                u["wallet"], _iso(u["first_seen"]), _iso(u["last_seen"]), u["sign_ins"],
-                "" if u["value_usd"] is None else f"{u['value_usd']:.2f}",
-                u["token_count"] if u["token_count"] is not None else "", u["watch_count"], top,
-            )])
-        return Response(
-            out.getvalue(),
+
+        def rows():
+            out = io.StringIO()
+            w = csv.writer(out)
+            w.writerow(["wallet", "first_seen_utc", "last_seen_utc", "sign_ins", "portfolio_usd",
+                        "coins", "watchlist", "top_coins"])
+            for n, u in enumerate(store.users_with_holdings()):
+                top = "; ".join(
+                    f"{h.get('symbol') or (h.get('mint') or '')[:6]} ${h['value_usd']:.2f}"
+                    for h in u["holdings"][:5] if h.get("value_usd") is not None
+                )
+                w.writerow([_csv_cell(v) for v in (
+                    u["wallet"], _iso(u["first_seen"]), _iso(u["last_seen"]), u["sign_ins"],
+                    "" if u["value_usd"] is None else f"{u['value_usd']:.2f}",
+                    u["token_count"] if u["token_count"] is not None else "", u["watch_count"], top,
+                )])
+                if n % 200 == 199:
+                    yield out.getvalue()
+                    out.seek(0)
+                    out.truncate()
+            yield out.getvalue()
+
+        return StreamingResponse(
+            rows(),
             media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="pansol-tracker-users.csv"'},
         )
@@ -312,8 +336,10 @@ def make_app(
             except ChainError as e:
                 log.warning("admin live portfolio %s: %s", address, e)
                 raise HTTPException(502, "Couldn't reach the Solana network. Try again in a minute.")
-            store.save_snapshot(address, live_portfolio["total_usd"], live_portfolio["holdings"], now())
-            user = store.user(address)
+            if live_portfolio["prices_ok"]:
+                store.save_snapshot(address, live_portfolio["total_usd"], live_portfolio["coin_count"],
+                                    live_portfolio["holdings"], now())
+                user = store.user(address)
         user["is_admin"] = address in settings.admin_wallets
         return {"user": user, "watchlist": watch, "portfolio": live_portfolio}
 

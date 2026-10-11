@@ -17,8 +17,10 @@ TOKEN_PROGRAMS = (
     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",  # Token-2022 (pump.fun and newer coins)
 )
 DEXSCREENER_TOKENS = "https://api.dexscreener.com/tokens/v1/solana/"
-DEXSCREENER_BATCH = 30      # addresses per request, the API's limit
-MAX_TOKENS = 300            # coins priced per wallet; wallets full of airdropped spam stop here
+DEXSCREENER_BATCH = 30          # addresses per request, the API's limit
+DEXSCREENER_TIMEOUT = httpx.Timeout(6.0, connect=3.0)
+MAX_PRICED = 1000               # coins looked up per wallet; wallets full of airdropped spam stop here
+MAX_SHOWN = 300                 # coins listed per wallet, most valuable first
 
 
 class ChainError(Exception):
@@ -59,29 +61,35 @@ class Chain:
         http: httpx.Client | None = None,
         clock: Callable[[], float] = time.time,
         price_ttl: float = 30,
+        no_market_ttl: float = 600,
         balance_ttl: float = 20,
+        outage_cooldown: float = 30,
     ):
         self.rpc_url = rpc_url
         self.http = http or httpx.Client(timeout=15, headers={"user-agent": "pansol-tracker/1.0"})
         self.clock = clock
         self.price_ttl = price_ttl
+        self.no_market_ttl = no_market_ttl
         self.balance_ttl = balance_ttl
+        self.outage_cooldown = outage_cooldown
         self._lock = threading.Lock()
         self._coins: dict[str, tuple[float, dict | None]] = {}
         self._balances: dict[str, tuple[float, tuple[float, dict[str, float]]]] = {}
+        self._dex_down_until = 0.0
 
     # ---------- Solana RPC ----------
 
-    def _rpc(self, method: str, params: list):
+    def _rpc(self, method: str, params: list) -> dict:
         try:
             r = self.http.post(self.rpc_url, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
             r.raise_for_status()
             body = r.json()
         except (httpx.HTTPError, ValueError) as e:
             raise ChainError(f"{method}: {e}") from e
-        if not isinstance(body, dict) or "error" in body or "result" not in body:
-            raise ChainError(f"{method}: {body.get('error') if isinstance(body, dict) else body}")
-        return body["result"]
+        result = body.get("result") if isinstance(body, dict) else None
+        if not isinstance(result, dict):
+            raise ChainError(f"{method}: {body.get('error') if isinstance(body, dict) else 'unexpected reply'}")
+        return result
 
     def balances(self, wallet: str) -> tuple[float, dict[str, float]]:
         """SOL (wrapped SOL included) and every fungible token the wallet holds, by mint."""
@@ -91,21 +99,23 @@ class Chain:
         if hit and now - hit[0] < self.balance_ttl:
             return hit[1]
 
-        sol = (self._rpc("getBalance", [wallet, {"commitment": "confirmed"}]).get("value") or 0) / 1e9
+        lamports = _num(self._rpc("getBalance", [wallet, {"commitment": "confirmed"}]).get("value")) or 0.0
+        sol = lamports / 1e9
         tokens: dict[str, float] = {}
         for program in TOKEN_PROGRAMS:
             res = self._rpc(
                 "getTokenAccountsByOwner",
                 [wallet, {"programId": program}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
             )
-            for acc in res.get("value") or []:
+            accounts = res.get("value")
+            for acc in accounts if isinstance(accounts, list) else []:
                 try:
                     info = acc["account"]["data"]["parsed"]["info"]
-                    mint = info["mint"]
+                    mint = str(info["mint"])
                     amount_info = info["tokenAmount"]
                     decimals = int(amount_info["decimals"])
                     amount = _num(amount_info.get("uiAmountString") or amount_info.get("uiAmount")) or 0.0
-                except (KeyError, TypeError, ValueError):
+                except (KeyError, TypeError, ValueError, AttributeError):
                     continue
                 if amount <= 0 or decimals == 0:   # empty accounts and NFTs
                     continue
@@ -123,34 +133,54 @@ class Chain:
 
     # ---------- DexScreener ----------
 
-    def coins(self, mints: Iterable[str]) -> dict[str, dict | None]:
-        """Name, price, 24h change, market cap and links per mint. None when no market exists."""
+    def coins(self, mints: Iterable[str], fresh: Iterable[str] = ()) -> tuple[dict[str, dict | None], bool]:
+        """Name, price, 24h change, market cap and links per mint (None: no market found).
+
+        The flag is False when DexScreener failed and some mint has neither fresh nor older data.
+        Coins without a market are re-checked every `no_market_ttl` seconds, except those in `fresh`
+        (watchlist and pinned coins), which may get their first market at any moment.
+        """
         now = self.clock()
+        fresh = set(fresh)
         out: dict[str, dict | None] = {}
         missing: list[str] = []
         with self._lock:
+            dex_down = now < self._dex_down_until
             for m in dict.fromkeys(mints):
                 hit = self._coins.get(m)
-                if hit and now - hit[0] < self.price_ttl:
+                ttl = self.price_ttl if hit is None or hit[1] is not None or m in fresh else self.no_market_ttl
+                if hit and now - hit[0] < ttl:
                     out[m] = hit[1]
                 else:
                     missing.append(m)
 
+        complete = True
         for i in range(0, len(missing), DEXSCREENER_BATCH):
             chunk = missing[i : i + DEXSCREENER_BATCH]
-            try:
-                r = self.http.get(DEXSCREENER_TOKENS + ",".join(chunk))
-                r.raise_for_status()
-                data = r.json()
-            except (httpx.HTTPError, ValueError) as e:
-                log.warning("DexScreener unavailable: %s", e)
-                for m in chunk:
-                    out.setdefault(m, None)      # show the coin without a price; retry next time
-                continue
+            data = None
+            if not dex_down:
+                try:
+                    r = self.http.get(DEXSCREENER_TOKENS + ",".join(chunk), timeout=DEXSCREENER_TIMEOUT)
+                    r.raise_for_status()
+                    data = r.json()
+                except (httpx.HTTPError, ValueError) as e:
+                    log.warning("DexScreener unavailable, pausing for %ss: %s", self.outage_cooldown, e)
+                    dex_down = True
+                    with self._lock:
+                        self._dex_down_until = now + self.outage_cooldown
+            if data is None:
+                # Keep showing the last known data; never cache the failure.
+                with self._lock:
+                    for m in missing[i:]:
+                        stale = self._coins.get(m)
+                        out[m] = stale[1] if stale else None
+                        complete = complete and stale is not None
+                break
+
             pairs = data.get("pairs") if isinstance(data, dict) else data
             best: dict[str, tuple[float, dict]] = {}
             wanted = set(chunk)
-            for pair in pairs or []:
+            for pair in pairs if isinstance(pairs, list) else []:
                 if not isinstance(pair, dict):
                     continue
                 base = (pair.get("baseToken") or {}).get("address")
@@ -160,25 +190,24 @@ class Chain:
                 if base not in best or liquidity > best[base][0]:
                     best[base] = (liquidity, pair)
             with self._lock:
-                if len(self._coins) > 20000:
+                if len(self._coins) > 50000:
                     self._coins.clear()
                 for m in chunk:
                     coin = _coin(best[m][1]) if m in best else None
                     self._coins[m] = (now, coin)
                     out[m] = coin
-        return out
+        return out, complete
 
     # ---------- portfolio ----------
 
     def portfolio(self, wallet: str, watch: Iterable[str] = (), pinned: str | None = None) -> dict:
         sol, tokens = self.balances(wallet)
         mints = list(tokens)
-        hidden = max(0, len(mints) - MAX_TOKENS)
-        if hidden:
-            mints = sorted(mints, key=lambda m: -tokens[m])[:MAX_TOKENS]
+        if len(mints) > MAX_PRICED:
+            mints = sorted(mints, key=lambda m: -tokens[m])[:MAX_PRICED]
         watch = list(watch)
         extra = [pinned] if pinned else []
-        coins = self.coins([SOL_MINT, *mints, *watch, *extra])
+        coins, prices_ok = self.coins([SOL_MINT, *mints, *watch, *extra], fresh=[*watch, *extra])
 
         holdings = []
         if sol > 0:
@@ -187,11 +216,14 @@ class Chain:
         holdings += [_holding(m, tokens[m], coins.get(m)) for m in mints]
         holdings.sort(key=lambda h: (h["value_usd"] is None, -(h["value_usd"] or 0)))
         total = sum(h["value_usd"] or 0 for h in holdings)
+        hidden = len(tokens) + (1 if sol > 0 else 0) - min(len(holdings), MAX_SHOWN)
 
         return {
             "wallet": wallet,
             "total_usd": total,
-            "holdings": holdings,
+            "prices_ok": prices_ok,
+            "holdings": holdings[:MAX_SHOWN],
+            "coin_count": len(tokens) + (1 if sol > 0 else 0),
             "hidden_tokens": hidden,
             "watchlist": [{"mint": m, **(coins.get(m) or _unknown())} for m in watch],
             "pansol": ({"mint": pinned, **(coins.get(pinned) or _unknown())} if pinned else None),

@@ -8,9 +8,13 @@
 
   let me = null;
   let users = [];
+  let total = 0;
   let serverNow = Date.now() / 1000;
   let timer = 0;
-  let openWallet = null;
+  let running = null;
+  let queued = null;
+  let openWallet = null;       // wallet whose detail dialog is open
+  let renderedWallet = null;   // wallet whose data the dialog currently shows
 
   function show(view) {
     for (const id of ["loading", "signedOut", "notAdmin", "app"]) $(id).hidden = id !== view;
@@ -22,14 +26,24 @@
     $(id).className = `msg${kind ? " " + kind : ""}`;
   }
 
+  // Forget every user's data this page holds (sign-out, lost admin rights).
+  function clearData() {
+    stop();
+    users = [];
+    total = 0;
+    $("rows").replaceChildren();
+    $("listNote").hidden = true;
+    $("empty").hidden = true;
+    if ($("detail").open) $("detail").close();
+    clearDetail();
+    setMsg("appMsg", "");
+  }
+
   // ---------- sign in ----------
 
   async function showSignedOut(message = "") {
-    stop();
     me = null;
-    users = [];
-    $("rows").replaceChildren();
-    if ($("detail").open) $("detail").close();
+    clearData();
     show("signedOut");
     setMsg("signInMsg", message, message ? "error" : "");
     const p = await W.waitForProvider();
@@ -39,7 +53,7 @@
     if (!p) {
       $("openInPhantom").href = W.openInPhantomUrl();
       setMsg("signInMsg", W.isMobile()
-        ? "On your phone, open this page inside the Phantom app."
+        ? "On your phone or tablet, open this page inside the Phantom app."
         : "Phantom isn't installed in this browser.");
     }
   }
@@ -49,8 +63,9 @@
     $("walletShort").textContent = W.short(me.wallet);
     $("walletShort").title = me.wallet;
     if (!me.isAdmin) {
-      stop();
+      clearData();
       $("notAdminWallet").textContent = me.wallet;
+      setMsg("notAdminMsg", "");
       show("notAdmin");
       return;
     }
@@ -74,7 +89,15 @@
     }
   });
 
-  const signOut = async () => { try { await W.signOut(); } finally { showSignedOut(); } };
+  async function signOut() {
+    try {
+      await W.signOut();
+      showSignedOut();
+    } catch (e) {
+      const where = $("notAdmin").hidden ? "appMsg" : "notAdminMsg";
+      setMsg(where, `Couldn't sign out: ${e.message}`, "error");
+    }
+  }
   $("signOut").addEventListener("click", signOut);
   $("switchWallet").addEventListener("click", signOut);
 
@@ -83,26 +106,46 @@
     timer = 0;
   }
 
+  // Lost admin rights or the session changed in another tab: show whoever is signed in now.
+  async function recheck(message) {
+    clearData();
+    const who = await W.me().catch(() => null);
+    if (who) signedIn(who);
+    else showSignedOut(message);
+  }
+
   // ---------- user list ----------
 
-  async function load() {
-    $("refresh").disabled = true;
+  function load() {
+    if (!me || !me.isAdmin) return Promise.resolve();
+    if (!running) {
+      running = fetchUsers().finally(() => { running = null; });
+      return running;
+    }
+    if (!queued) queued = running.then(() => { queued = null; return load(); });
+    return queued;
+  }
+
+  async function fetchUsers() {
+    $("refresh").setAttribute("aria-busy", "true");
     try {
       const data = await W.api("/api/admin/users");
+      if (!me || !me.isAdmin) return;
       users = data.users;
+      total = data.stats.users;
       serverNow = data.now;
       renderStats(data.stats);
       renderRows();
       setMsg("appMsg", "");
     } catch (e) {
       if (e.status === 401) return showSignedOut("Your admin sign-in expired. Connect again.");
-      if (e.status === 403) return signedIn({ ...me, isAdmin: false });
+      if (e.status === 403) return recheck("Connect again.");
       setMsg("appMsg", e.message, "error");
     } finally {
-      $("refresh").disabled = false;
+      $("refresh").removeAttribute("aria-busy");
     }
   }
-  $("refresh").addEventListener("click", load);
+  $("refresh").addEventListener("click", () => load());
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.isAdmin) load(); });
 
   function renderStats(s) {
@@ -126,7 +169,7 @@
       .sort((a, b) => (b[key] ?? -1) - (a[key] ?? -1));
     $("rows").replaceChildren(...list.map((u) => el("tr", {},
       el("td", {},
-        el("button", { class: "wallet-btn", type: "button", title: u.wallet, text: W.short(u.wallet), onclick: () => openDetail(u.wallet) }),
+        el("button", { class: "wallet-btn", type: "button", title: u.wallet, "data-wallet": u.wallet, text: W.short(u.wallet), onclick: () => openDetail(u.wallet) }),
         u.is_admin ? el("span", { class: "badge", text: "admin" }) : null),
       el("td", {}, when(u.first_seen)),
       el("td", {}, when(u.last_seen)),
@@ -136,36 +179,55 @@
       el("td", { class: "num", text: String(u.watch_count) }),
     )));
     $("empty").hidden = users.length > 0;
-    if (users.length && !list.length) setMsg("appMsg", "No wallet matches that search.");
-    else if ($("appMsg").textContent === "No wallet matches that search.") setMsg("appMsg", "");
+
+    const notes = [];
+    if (total > users.length) {
+      notes.push(`Showing the ${users.length.toLocaleString("en-US")} most recently active of ${total.toLocaleString("en-US")} users. Export CSV to get everyone.`);
+    }
+    if (users.length && !list.length) notes.push("No wallet in this list matches that search.");
+    $("listNote").textContent = notes.join(" ");
+    $("listNote").hidden = notes.length === 0;
   }
   $("search").addEventListener("input", renderRows);
   $("sort").addEventListener("change", renderRows);
 
   // ---------- one user ----------
 
+  function clearDetail() {
+    renderedWallet = null;
+    for (const id of ["detailFacts", "detailHoldings", "detailWatch"]) $(id).replaceChildren();
+    setMsg("detailMsg", "");
+  }
+
   async function openDetail(wallet, live = false) {
+    if (wallet !== renderedWallet) clearDetail();
     openWallet = wallet;
     $("detailAddr").textContent = wallet;
     $("detailSolscan").href = `https://solscan.io/account/${encodeURIComponent(wallet)}`;
     if (!$("detail").open) $("detail").showModal();
     setMsg("detailMsg", live ? "Checking the wallet on Solana…" : "Loading…");
-    $("detailLive").disabled = true;
+    $("detailLive").setAttribute("aria-busy", "true");
     try {
       const data = await W.api(`/api/admin/users/${encodeURIComponent(wallet)}${live ? "?live=1" : ""}`);
       if (openWallet !== wallet) return;
       renderDetail(data);
-      setMsg("detailMsg", live ? "Updated from the chain just now." : "", live ? "ok" : "");
+      if (!live) setMsg("detailMsg", "");
+      else if (data.portfolio && !data.portfolio.prices_ok) {
+        setMsg("detailMsg", "Balances checked, but DexScreener isn't answering, so the saved snapshot was kept.", "error");
+      } else setMsg("detailMsg", "Updated from the chain just now.", "ok");
       if (live) load();
     } catch (e) {
-      if (e.status === 401) { $("detail").close(); return showSignedOut("Your admin sign-in expired. Connect again."); }
+      if (openWallet !== wallet) return;
+      if (e.status === 401) return showSignedOut("Your admin sign-in expired. Connect again.");
+      if (e.status === 403) return recheck("Connect again.");
       setMsg("detailMsg", e.message, "error");
     } finally {
-      $("detailLive").disabled = false;
+      $("detailLive").removeAttribute("aria-busy");
     }
   }
 
   function renderDetail({ user, watchlist }) {
+    renderedWallet = user.wallet;
     const facts = [
       ["First seen", new Date(user.first_seen * 1000).toLocaleString()],
       ["Last seen", new Date(user.last_seen * 1000).toLocaleString()],
@@ -192,9 +254,17 @@
       : [el("li", { class: "mute", text: "Empty" })]));
   }
 
-  $("detailLive").addEventListener("click", () => openWallet && openDetail(openWallet, true));
+  $("detailLive").addEventListener("click", () => {
+    if (openWallet && !$("detailLive").hasAttribute("aria-busy")) openDetail(openWallet, true);
+  });
   $("detailClose").addEventListener("click", () => $("detail").close());
-  $("detail").addEventListener("close", () => { openWallet = null; });
+  $("detail").addEventListener("close", () => {
+    // The list may have been redrawn while the dialog was open: return focus to this wallet's row.
+    const wallet = openWallet;
+    openWallet = null;
+    const button = wallet && [...$("rows").querySelectorAll("button[data-wallet]")].find((b) => b.dataset.wallet === wallet);
+    if (button) button.focus();
+  });
   $("detailCopy").addEventListener("click", async () => {
     const text = $("detailAddr").textContent;
     try {
@@ -220,8 +290,12 @@
     await W.waitForProvider();
     W.onAccountChange(async (wallet) => {
       if (!me || wallet === me.wallet) return;
-      try { await W.signOut(); } finally {
+      try {
+        await W.signOut();
         showSignedOut("You switched wallets in Phantom. Connect again.");
+      } catch (e) {
+        setMsg($("notAdmin").hidden ? "appMsg" : "notAdminMsg",
+          `You switched wallets in Phantom, but signing out failed (${e.message}). Press Sign out to try again.`, "error");
       }
     });
   })();

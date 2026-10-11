@@ -41,7 +41,7 @@ Copy it from Phantom (tap the account name, then copy the Solana address). Sever
 |---|---|---|
 | `PANSOL_ADMIN_WALLETS` | none | Who can open `/admin` |
 | `SOLANA_RPC_URL` | public Solana RPC | The public one is slow and rate-limited. A free [Helius](https://www.helius.dev) URL is much better |
-| `PANSOL_PUBLIC_URL` | the address in the browser | Your real site address, e.g. `https://pansol.xyz`. Set it in production |
+| `PANSOL_PUBLIC_URL` | none | The address(es) people open, e.g. `https://pansol.xyz,https://www.pansol.xyz`. Sign-in only works on these (on Railway and Render the platform's own address is added for you). With none set, sign-in only works on `localhost` |
 | `PANSOL_DB` | `state/pansol.db` | The SQLite file with users and watchlists. Back it up |
 | `PANSOL_MINT` | none | After launch: Pansol's token address, so every tracker shows its live price |
 | `HOST`, `PORT` | `127.0.0.1`, `8080` | Use `HOST=0.0.0.0` on a server |
@@ -52,11 +52,15 @@ The tracker needs a server and a disk, so a static host like Netlify Drop is no 
 
 1. On [railway.com](https://railway.com): **New Project → Deploy from GitHub repo**, pick this repo and branch.
 2. **Variables**: `RAILWAY_DOCKERFILE_PATH=pansol/Dockerfile`, `PANSOL_ADMIN_WALLETS=<your address>`,
-   `SOLANA_RPC_URL=<your Helius URL>`, and later `PANSOL_PUBLIC_URL=https://<your domain>`.
+   `SOLANA_RPC_URL=<your Helius URL>`.
 3. **Add a Volume** mounted at `/data` (this keeps the user list across deploys).
-4. **Settings → Networking → Generate Domain**. Open it, then `/admin`, and connect your admin wallet.
+4. **Settings → Networking → Generate Domain**, then redeploy once so the app learns its address.
+   Open it, then `/admin`, and connect your admin wallet.
+5. With your own domain (e.g. `pansol.xyz`), add `PANSOL_PUBLIC_URL=https://pansol.xyz` so sign-in works there too.
 
-Any host that runs a Dockerfile with a persistent disk works the same way (Render with a disk, Fly.io with a volume).
+Any host that runs a Dockerfile with a persistent disk works the same way (Render with a disk, Fly.io with a
+volume). Elsewhere, always set `PANSOL_PUBLIC_URL`: the sign-in message names the site, and Phantom checks
+that name against the page asking for the signature, which is what stops a copycat site from reusing it.
 
 On phones, the Connect button only works inside Phantom's own browser. The tracker shows visitors an
 **Open in Phantom** button that does that for them.

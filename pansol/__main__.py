@@ -20,10 +20,14 @@ def main() -> None:
         settings = Settings.from_env()
     except ValueError as e:
         sys.exit(f"Config error: {e}")
+    host = os.environ.get("HOST", "127.0.0.1")
     if not settings.admin_wallets:
         logging.warning("PANSOL_ADMIN_WALLETS is empty: nobody can open the admin view.")
+    if settings.public_urls:
+        logging.info("Sign-in works on: %s", ", ".join(settings.public_urls))
+    elif host not in ("127.0.0.1", "localhost", "::1"):
+        logging.warning("PANSOL_PUBLIC_URL is empty: sign-in only works on localhost until you set it.")
 
-    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8080"))
     print(f"Pansol: http://{host}:{port}   tracker: /tracker   admin: /admin")
     uvicorn.run(

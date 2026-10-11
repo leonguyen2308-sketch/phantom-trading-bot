@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Callable, Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -24,10 +25,8 @@ CREATE TABLE IF NOT EXISTS watchlist (
   added_at INTEGER NOT NULL,
   PRIMARY KEY (wallet, mint)
 );
-CREATE TABLE IF NOT EXISTS nonces (
+CREATE TABLE IF NOT EXISTS used_nonces (
   nonce      TEXT PRIMARY KEY,
-  wallet     TEXT NOT NULL,
-  message    TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -35,13 +34,15 @@ CREATE TABLE IF NOT EXISTS sessions (
   wallet     TEXT NOT NULL,
   expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS users_last_seen ON users (last_seen);
 """
 
-MAX_PENDING_NONCES = 20_000
-
-
-class Busy(Exception):
-    """Too many sign-ins waiting for a signature."""
+SUMMARY = "u.wallet, u.first_seen, u.last_seen, u.sign_ins, u.value_usd, u.token_count, u.checked_at"
+WATCH_COUNT = "(SELECT COUNT(*) FROM watchlist w WHERE w.wallet = u.wallet) AS watch_count"
 
 
 class Store:
@@ -57,24 +58,27 @@ class Store:
                 self.db.execute("PRAGMA journal_mode=WAL")
             self.db.executescript(SCHEMA)
 
-    # ---------- sign-in nonces (one use, five minutes) ----------
-
-    def add_nonce(self, nonce: str, wallet: str, message: str, expires_at: int, now: int) -> None:
+    def secret(self, make: Callable[[], bytes]) -> bytes:
+        """The key that signs sign-in challenges, created once and kept with the data."""
         with self.lock, self.db:
-            self.db.execute("DELETE FROM nonces WHERE expires_at <= ?", (now,))
-            pending = self.db.execute("SELECT COUNT(*) FROM nonces").fetchone()[0]
-            if pending >= MAX_PENDING_NONCES:
-                raise Busy
-            self.db.execute("INSERT INTO nonces VALUES (?, ?, ?, ?)", (nonce, wallet, message, expires_at))
+            row = self.db.execute("SELECT value FROM meta WHERE key = 'challenge_secret'").fetchone()
+            if row:
+                return bytes(row["value"])
+            value = make()
+            self.db.execute("INSERT INTO meta VALUES ('challenge_secret', ?)", (value,))
+            return value
 
-    def take_nonce(self, nonce: str, now: int) -> dict | None:
-        """Return and delete the nonce, so a signature can never be used twice."""
+    # ---------- sign-in nonces: stored only once a signature checks out ----------
+
+    def use_nonce(self, nonce: str, expires_at: int, now: int) -> bool:
+        """Mark the nonce used. False if it already was, so a signature can never be replayed."""
         with self.lock, self.db:
-            row = self.db.execute("SELECT * FROM nonces WHERE nonce = ?", (nonce,)).fetchone()
-            if row is None:
-                return None
-            self.db.execute("DELETE FROM nonces WHERE nonce = ?", (nonce,))
-        return dict(row) if row["expires_at"] > now else None
+            self.db.execute("DELETE FROM used_nonces WHERE expires_at <= ?", (now,))
+            try:
+                self.db.execute("INSERT INTO used_nonces VALUES (?, ?)", (nonce, expires_at))
+            except sqlite3.IntegrityError:
+                return False
+            return True
 
     # ---------- sessions ----------
 
@@ -104,7 +108,7 @@ class Store:
                 (wallet, now, now),
             )
 
-    def save_snapshot(self, wallet: str, value_usd: float, holdings: list[dict], now: int) -> None:
+    def save_snapshot(self, wallet: str, value_usd: float, token_count: int, holdings: list[dict], now: int) -> None:
         """Keep the latest portfolio so the admin view shows it without asking the chain again."""
         slim = [
             {k: h.get(k) for k in ("mint", "symbol", "name", "amount", "price_usd", "value_usd")}
@@ -113,7 +117,7 @@ class Store:
         with self.lock, self.db:
             self.db.execute(
                 "UPDATE users SET value_usd = ?, token_count = ?, holdings = ?, checked_at = ? WHERE wallet = ?",
-                (value_usd, len(holdings), json.dumps(slim), now, wallet),
+                (value_usd, token_count, json.dumps(slim), now, wallet),
             )
 
     def touch(self, wallet: str, now: int) -> None:
@@ -121,21 +125,29 @@ class Store:
         with self.lock, self.db:
             self.db.execute("UPDATE users SET last_seen = ? WHERE wallet = ?", (now, wallet))
 
-    def users(self) -> list[dict]:
+    def users(self, limit: int | None = None) -> list[dict]:
+        """Most recently seen first, without the holdings snapshot (that is per user, in user())."""
+        sql = f"SELECT {SUMMARY}, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC"
         with self.lock:
-            rows = self.db.execute(
-                """SELECT u.*, (SELECT COUNT(*) FROM watchlist w WHERE w.wallet = u.wallet) AS watch_count
-                   FROM users u ORDER BY u.last_seen DESC"""
-            ).fetchall()
-        return [_user(r) for r in rows]
+            rows = self.db.execute(sql + (" LIMIT ?" if limit else ""), (limit,) if limit else ()).fetchall()
+        return [dict(r) for r in rows]
+
+    def users_with_holdings(self) -> Iterator[dict]:
+        """Every user with their snapshot, a page at a time (for the CSV export)."""
+        offset = 0
+        while True:
+            with self.lock:
+                rows = self.db.execute(
+                    f"SELECT u.*, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC LIMIT 500 OFFSET ?", (offset,)
+                ).fetchall()
+            if not rows:
+                return
+            yield from (_user(r) for r in rows)
+            offset += len(rows)
 
     def user(self, wallet: str) -> dict | None:
         with self.lock:
-            row = self.db.execute(
-                """SELECT u.*, (SELECT COUNT(*) FROM watchlist w WHERE w.wallet = u.wallet) AS watch_count
-                   FROM users u WHERE u.wallet = ?""",
-                (wallet,),
-            ).fetchone()
+            row = self.db.execute(f"SELECT u.*, {WATCH_COUNT} FROM users u WHERE u.wallet = ?", (wallet,)).fetchone()
         return _user(row) if row else None
 
     def stats(self, now: int) -> dict:

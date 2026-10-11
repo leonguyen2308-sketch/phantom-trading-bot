@@ -4,11 +4,13 @@
   const { el } = W;
   const $ = (id) => document.getElementById(id);
   const REFRESH_MS = 30000;
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
   const LAUNCH = { year: 2026, month: 10, day: 15, utcOffsetHours: 7 };
 
   let me = null;
   let timer = 0;
-  let loading = false;
+  let running = null;   // the portfolio request in flight
+  let queued = null;    // one more request, started when it finishes
 
   function show(view) {
     for (const id of ["loading", "signedOut", "app"]) $(id).hidden = id !== view;
@@ -21,11 +23,26 @@
     node.className = `msg${kind ? " " + kind : ""}`;
   }
 
+  function showWallet() {
+    $("walletShort").textContent = W.short(me.wallet);
+    $("walletShort").title = me.wallet;
+  }
+
   // ---------- signed out ----------
+
+  function clearPortfolio() {
+    for (const id of ["holdings", "watchlist"]) $(id).replaceChildren();
+    for (const id of ["total", "solAmount", "coinCount", "updated"]) $(id).textContent = "—";
+    for (const id of ["holdingsEmpty", "watchEmpty", "hiddenNote"]) $(id).hidden = true;
+    setMsg("appMsg", "");
+    setMsg("watchMsg", "");
+    $("watchMint").value = "";
+  }
 
   async function showSignedOut(message = "") {
     stopRefresh();
     me = null;
+    clearPortfolio();
     show("signedOut");
     setMsg("signInMsg", message, message ? "error" : "");
     const p = await W.waitForProvider();
@@ -35,7 +52,7 @@
     if (!p) {
       $("openInPhantom").href = W.openInPhantomUrl();
       setMsg("signInMsg", W.isMobile()
-        ? "On your phone, open this page inside the Phantom app to connect."
+        ? "On your phone or tablet, open this page inside the Phantom app to connect."
         : "Phantom isn't installed in this browser. Get it, then reload this page.");
     }
   }
@@ -57,15 +74,20 @@
   });
 
   $("signOut").addEventListener("click", async () => {
-    try { await W.signOut(); } finally { showSignedOut(); }
+    try {
+      await W.signOut();
+      showSignedOut();
+    } catch (e) {
+      setMsg("appMsg", `Couldn't sign out: ${e.message}`, "error");
+    }
   });
 
   // ---------- signed in ----------
 
   function showApp() {
+    clearPortfolio();
     show("app");
-    $("walletShort").textContent = W.short(me.wallet);
-    $("walletShort").title = me.wallet;
+    showWallet();
     renderPansol(null);
     load();
     startRefresh();
@@ -81,37 +103,55 @@
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden && me) load(); });
 
-  async function load() {
-    if (loading || !me) return;
-    loading = true;
-    $("refresh").disabled = true;
+  // One request at a time. A call made while one runs gets a fresh run after it, so a just-added
+  // watchlist coin or a just-switched wallet always shows up.
+  function load() {
+    if (!me) return Promise.resolve();
+    if (!running) {
+      running = fetchPortfolio().finally(() => { running = null; });
+      return running;
+    }
+    if (!queued) queued = running.then(() => { queued = null; return load(); });
+    return queued;
+  }
+
+  async function fetchPortfolio() {
+    $("refresh").setAttribute("aria-busy", "true");
     try {
       const data = await W.api("/api/portfolio");
-      if (!me || data.wallet !== me.wallet) return;
+      if (!me) return;
+      if (data.wallet !== me.wallet) {
+        // Someone signed in with another wallet in a different tab; the cookie now belongs to it.
+        const who = await W.me().catch(() => null);
+        if (!who) return showSignedOut("Your sign-in expired. Connect again.");
+        if (who.wallet !== data.wallet) return;
+        me = who;
+        showWallet();
+        setMsg("watchMsg", "");
+      }
       render(data);
-      setMsg("appMsg", "");
+      setMsg("appMsg", data.prices_ok ? "" : "DexScreener isn't answering right now, so some prices are missing. Retrying shortly.");
     } catch (e) {
       if (e.status === 401) return showSignedOut("Your sign-in expired. Connect again.");
       setMsg("appMsg", e.message, "error");
     } finally {
-      loading = false;
-      $("refresh").disabled = false;
+      $("refresh").removeAttribute("aria-busy");
     }
   }
-  $("refresh").addEventListener("click", load);
+  $("refresh").addEventListener("click", () => load());
 
   function render(data) {
     $("total").textContent = W.usd(data.total_usd);
-    const sol = data.holdings.find((h) => h.symbol === "SOL" && h.mint === "So11111111111111111111111111111111111111112");
+    const sol = data.holdings.find((h) => h.mint === SOL_MINT);
     $("solAmount").textContent = sol ? W.amount(sol.amount) : "0";
-    $("coinCount").textContent = String(data.holdings.length);
+    $("coinCount").textContent = String(data.coin_count ?? data.holdings.length);
     $("updated").textContent = new Date(data.updated_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
     $("holdings").replaceChildren(...data.holdings.map(holdingRow));
     $("holdingsEmpty").hidden = data.holdings.length > 0;
     $("hiddenNote").hidden = !data.hidden_tokens;
     $("hiddenNote").textContent = data.hidden_tokens
-      ? `${data.hidden_tokens} more tokens in this wallet aren't shown (mostly airdropped spam).`
+      ? `${data.hidden_tokens} more tokens in this wallet aren't listed. They have the lowest value or no market (usually airdropped spam).`
       : "";
 
     $("watchlist").replaceChildren(...data.watchlist.map(watchRow));
@@ -147,8 +187,9 @@
       class: "link-btn c-action",
       type: "button",
       text: "Remove",
+      "data-mint": c.mint,
       "aria-label": `Remove ${c.name || c.symbol || c.mint} from watchlist`,
-      onclick: () => removeWatch(c.mint),
+      onclick: (e) => removeWatch(c.mint, e.currentTarget),
     });
     return el("div", { class: "coin-row watch-row-item" },
       el("a", { class: "c-coin", href: W.dexUrl(c), target: "_blank", rel: "noopener noreferrer", style: "text-decoration:none;min-width:0" },
@@ -161,11 +202,14 @@
 
   // ---------- watchlist ----------
 
+  let watchBusy = false;
   $("watchForm").addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (watchBusy) return;
     const mint = $("watchMint").value.trim();
     if (!mint) return setMsg("watchMsg", "Paste a coin's token address first.", "error");
-    $("watchAdd").disabled = true;
+    watchBusy = true;
+    $("watchAdd").setAttribute("aria-busy", "true");
     try {
       await W.api("/api/watchlist", { method: "POST", body: { mint } });
       $("watchMint").value = "";
@@ -176,14 +220,22 @@
       if (err.status === 401) return showSignedOut("Your sign-in expired. Connect again.");
       setMsg("watchMsg", err.message, "error");
     } finally {
-      $("watchAdd").disabled = false;
+      watchBusy = false;
+      $("watchAdd").removeAttribute("aria-busy");
+      if (me) $("watchMint").focus();
     }
   });
 
-  async function removeWatch(mint) {
+  async function removeWatch(mint, button) {
+    // Where keyboard focus goes once this row is gone: the next row's Remove, else the address field.
+    const buttons = [...$("watchlist").querySelectorAll("button[data-mint]")];
+    const next = buttons[buttons.indexOf(button) + 1] || buttons[buttons.indexOf(button) - 1];
+    const nextMint = next ? next.dataset.mint : null;
     try {
       await W.api(`/api/watchlist/${encodeURIComponent(mint)}`, { method: "DELETE" });
       await load();
+      const target = nextMint && [...$("watchlist").querySelectorAll("button[data-mint]")].find((b) => b.dataset.mint === nextMint);
+      (target || $("watchMint")).focus();
     } catch (err) {
       if (err.status === 401) return showSignedOut("Your sign-in expired. Connect again.");
       setMsg("watchMsg", err.message, "error");
@@ -210,6 +262,8 @@
       $("pansolSub").textContent = `24h ${change.text} · Market cap ${W.usd(coin.market_cap, { compact: true })}`;
       return;
     }
+    card.href = "/";
+    card.removeAttribute("target");
     const days = daysToLaunch();
     $("pansolTitle").textContent = days > 1 ? `PANSOL launches in ${days} days`
       : days === 1 ? "PANSOL launches tomorrow"
@@ -234,8 +288,11 @@
     await W.waitForProvider();
     W.onAccountChange(async (wallet) => {
       if (!me || wallet === me.wallet) return;
-      try { await W.signOut(); } finally {
+      try {
+        await W.signOut();
         showSignedOut("You switched wallets in Phantom. Connect again to track this one.");
+      } catch (e) {
+        setMsg("appMsg", `You switched wallets in Phantom, but signing out failed (${e.message}). Press Sign out to try again.`, "error");
       }
     });
   })();

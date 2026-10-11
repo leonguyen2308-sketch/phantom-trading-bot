@@ -58,6 +58,7 @@ class FakeNet:
         self.rpc_down = False
         self.dex_calls = 0
         self.symbols = {}          # mint -> symbol override
+        self.requested = []        # mints asked of DexScreener, per call
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if request.url.host == "rpc.test":
@@ -76,6 +77,7 @@ class FakeNet:
             if self.dex_down:
                 return httpx.Response(429, text="slow down")
             mints = str(request.url)[len(DEXSCREENER_TOKENS):].split(",")
+            self.requested.append(mints)
             pairs = []
             if SOL_MINT in mints:
                 pairs.append(pair(SOL_MINT, "SOL", 150.0, 9e6))
@@ -96,7 +98,8 @@ def env():
     net = FakeNet()
     clock = Clock()
     chain = Chain("https://rpc.test/", http=httpx.Client(transport=httpx.MockTransport(net.handler)), clock=clock)
-    settings = Settings(admin_wallets=frozenset({str(admin.pubkey())}), rpc_url="https://rpc.test/", db_path=":memory:")
+    settings = Settings(admin_wallets=frozenset({str(admin.pubkey())}), rpc_url="https://rpc.test/",
+                        db_path=":memory:", public_urls=("http://testserver",))
     app = make_app(settings, store=Store(":memory:"), chain=chain, clock=clock)
     return {"app": app, "net": net, "clock": clock, "admin": admin, "user": user, "other": other}
 
@@ -110,7 +113,7 @@ def sign_in(c, kp):
     assert start.status_code == 200, start.text
     msg = start.json()["message"]
     sig = base64.b64encode(bytes(kp.sign_message(msg.encode()))).decode()
-    return c.post("/api/auth/verify", json={"nonce": start.json()["nonce"], "signature": sig})
+    return c.post("/api/auth/verify", json={"challenge": start.json()["challenge"], "signature": sig})
 
 
 # ---------- sign in ----------
@@ -137,23 +140,23 @@ def test_signature_from_another_key_is_refused(env):
     c = client(env)
     start = c.post("/api/auth/nonce", json={"wallet": str(env["admin"].pubkey())}).json()
     forged = base64.b64encode(bytes(env["user"].sign_message(start["message"].encode()))).decode()
-    r = c.post("/api/auth/verify", json={"nonce": start["nonce"], "signature": forged})
+    r = c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": forged})
     assert r.status_code == 401
     assert c.get("/api/me").json()["wallet"] is None
 
 
-def test_nonce_is_single_use_and_expires(env):
+def test_challenge_is_single_use_and_expires(env):
     c = client(env)
     kp = env["user"]
     start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
     sig = base64.b64encode(bytes(kp.sign_message(start["message"].encode()))).decode()
-    assert c.post("/api/auth/verify", json={"nonce": start["nonce"], "signature": sig}).status_code == 200
-    assert c.post("/api/auth/verify", json={"nonce": start["nonce"], "signature": sig}).status_code == 400
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 200
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 400
 
     start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
     sig = base64.b64encode(bytes(kp.sign_message(start["message"].encode()))).decode()
     env["clock"].t += auth.NONCE_TTL + 1
-    assert c.post("/api/auth/verify", json={"nonce": start["nonce"], "signature": sig}).status_code == 400
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 400
 
 
 @pytest.mark.parametrize("bad", ["", "hello", "0" * 44, "O" * 44, 123])
@@ -165,7 +168,7 @@ def test_bad_wallet_address_is_refused(env, bad):
 def test_malformed_signature_is_refused(env, sig):
     c = client(env)
     start = c.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())}).json()
-    assert c.post("/api/auth/verify", json={"nonce": start["nonce"], "signature": sig}).status_code in (401, 422)
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code in (401, 422)
 
 
 def test_session_expires_and_logout_ends_it(env):
@@ -219,7 +222,79 @@ def test_portfolio_survives_price_outage(env):
     p = c.get("/api/portfolio").json()
     assert {h["mint"] for h in p["holdings"]} == {SOL_MINT, BONK}
     assert all(h["price_usd"] is None for h in p["holdings"])
-    assert p["total_usd"] == 0
+    assert p["total_usd"] == 0 and p["prices_ok"] is False
+
+
+def test_price_outage_keeps_last_prices_and_backs_off(env):
+    c = client(env)
+    spam = [str(Keypair().pubkey()) for _ in range(70)]
+    give(env, env["user"], 1_000_000_000, tokens=[token_account(BONK, 1_000_000)] + [token_account(m, 1) for m in spam])
+    sign_in(c, env["user"])
+    first = c.get("/api/portfolio").json()
+    assert first["total_usd"] == pytest.approx(171.0) and first["prices_ok"]
+
+    env["net"].dex_down = True
+    env["clock"].t += 31                                   # prices are stale, DexScreener now fails
+    calls = env["net"].dex_calls
+    p = c.get("/api/portfolio").json()
+    assert env["net"].dex_calls == calls + 1               # one failed call, not one per 30-coin chunk
+    assert p["total_usd"] == pytest.approx(171.0)          # last known prices still shown
+    c.get("/api/portfolio")
+    assert env["net"].dex_calls == calls + 1               # cooling down: no more calls
+
+    env["net"].dex_down = False
+    env["clock"].t += 31
+    c.get("/api/portfolio")
+    assert env["net"].dex_calls > calls + 1                # back to normal
+
+
+def test_price_outage_never_overwrites_the_snapshot(env):
+    c = client(env)
+    give(env, env["user"], 1_000_000_000, tokens=[token_account(BONK, 1_000_000)])
+    sign_in(c, env["user"])
+    c.get("/api/portfolio")
+    give(env, env["user"], 1_000_000_000, tokens=[token_account(BONK, 1_000_000), token_account(WIF, 5)])
+    env["net"].dex_down = True
+    env["clock"].t += 31
+    p = c.get("/api/portfolio").json()
+    assert p["prices_ok"] is False                          # WIF is new and has no price at all
+
+    a = client(env)
+    sign_in(a, env["admin"])
+    row = next(u for u in a.get("/api/admin/users").json()["users"] if u["wallet"] == str(env["user"].pubkey()))
+    assert row["value_usd"] == pytest.approx(171.0) and row["token_count"] == 2
+
+
+def test_big_wallets_list_the_valuable_coins_first(env):
+    c = client(env)
+    spam = [str(Keypair().pubkey()) for _ in range(305)]
+    give(env, env["user"], 0, tokens=[token_account(m, 1e9) for m in spam], t22=[token_account(WIF, 500)])
+    sign_in(c, env["user"])
+    p = c.get("/api/portfolio").json()
+    assert p["holdings"][0]["mint"] == WIF                  # a small amount of a real coin beats spam
+    assert p["total_usd"] == pytest.approx(1000.0)
+    assert len(p["holdings"]) == 300 and p["hidden_tokens"] == 6 and p["coin_count"] == 306
+
+
+def test_coins_without_a_market_are_rechecked_slowly(env):
+    c = client(env)
+    spam = str(Keypair().pubkey())
+    give(env, env["user"], 0, tokens=[token_account(spam, 5)])
+    sign_in(c, env["user"])
+    c.get("/api/portfolio")
+    asked = lambda: [m for call in env["net"].requested for m in call].count(spam)  # noqa: E731
+    assert asked() == 1
+    env["clock"].t += 60
+    c.get("/api/portfolio")
+    assert asked() == 1                                     # still known to have no market
+    c.post("/api/watchlist", json={"mint": spam})
+    env["clock"].t += 31
+    c.get("/api/portfolio")
+    assert asked() == 2                                     # watched coins are checked at the normal pace
+    env["clock"].t += 600
+    c.delete(f"/api/watchlist/{spam}")
+    c.get("/api/portfolio")
+    assert asked() == 3                                     # and held ones again after the long wait
 
 
 def test_portfolio_reports_rpc_outage(env):
@@ -298,6 +373,7 @@ def test_admin_sees_users_snapshots_and_detail(env):
     assert row["value_usd"] == pytest.approx(321.0)
     assert row["token_count"] == 2 and row["watch_count"] == 1 and row["sign_ins"] == 1
     assert row["is_admin"] is False
+    assert "holdings" not in row                            # the list stays light; detail has the coins
     assert data["stats"]["users"] == 2 and data["stats"]["new_24h"] == 2
 
     last_seen = row["last_seen"]
@@ -354,12 +430,72 @@ def test_settings_from_env():
     with pytest.raises(ValueError):
         Settings.from_env({"PANSOL_PUBLIC_URL": "https://pansol.xyz/path"})
     assert Settings.from_env({}).admin_wallets == frozenset()
+    s = Settings.from_env({"PANSOL_PUBLIC_URL": "https://Pansol.xyz/, https://www.pansol.xyz",
+                           "RAILWAY_PUBLIC_DOMAIN": "pansol.up.railway.app"})
+    assert s.public_urls == ("https://pansol.xyz", "https://www.pansol.xyz", "https://pansol.up.railway.app")
 
 
-def test_public_url_pins_the_signed_domain(env):
-    settings = Settings(admin_wallets=frozenset(), db_path=":memory:", public_url="https://pansol.example")
+def test_sign_in_domain_never_comes_from_the_host_header(env):
+    """A phishing site relaying our challenge must not get its own domain into the message."""
+    c = client(env)
+    r = c.post("/api/auth/nonce", json={"wallet": str(env["admin"].pubkey())}, headers={"host": "pansol-airdrop.example"})
+    assert r.status_code == 400
+
+    settings = Settings(admin_wallets=frozenset(), db_path=":memory:",
+                        public_urls=("https://pansol.example", "https://www.pansol.example"))
     c = TestClient(make_app(settings, store=Store(":memory:"), chain=Chain("https://rpc.test/"), clock=env["clock"]))
     msg = c.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())},
-                 headers={"host": "evil.example"}).json()["message"]
-    assert msg.startswith("pansol.example wants you to sign in")
-    assert "URI: https://pansol.example\n" in msg
+                 headers={"host": "www.pansol.example"}).json()["message"]
+    assert msg.startswith("www.pansol.example wants you to sign in")
+    assert "URI: https://www.pansol.example\n" in msg
+    assert c.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())},
+                  headers={"host": "localhost:8080"}).status_code == 400
+
+    # with nothing configured, only this computer can sign in
+    local = TestClient(make_app(Settings(db_path=":memory:"), store=Store(":memory:"), chain=Chain("https://rpc.test/"),
+                                clock=env["clock"]), base_url="http://127.0.0.1:8080")
+    msg = local.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())}).json()["message"]
+    assert msg.startswith("127.0.0.1:8080 wants you to sign in")
+
+
+def test_unsigned_challenges_store_nothing(env):
+    """Asking for challenges is free for the server, so a flood can't lock anyone out."""
+    store = Store(":memory:")
+    app = make_app(Settings(admin_wallets=frozenset({str(env["admin"].pubkey())}), db_path=":memory:",
+                            public_urls=("http://testserver",)), store=store, chain=Chain("https://rpc.test/"),
+                   clock=env["clock"])
+    c = TestClient(app)
+    for _ in range(300):
+        assert c.post("/api/auth/nonce", json={"wallet": "11111111111111111111111111111111"}).status_code == 200
+    counts = {t: store.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("used_nonces", "sessions", "users")}
+    assert counts == {"used_nonces": 0, "sessions": 0, "users": 0}
+    assert sign_in(c, env["admin"]).json()["isAdmin"] is True
+
+
+def test_tampered_challenge_is_refused(env):
+    c = client(env)
+    kp = env["user"]
+    start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
+    payload, mac = start["challenge"].split(".")
+    data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    data["w"] = str(env["admin"].pubkey())                     # claim to be the admin
+    forged = base64.urlsafe_b64encode(json.dumps(data, separators=(",", ":")).encode()).rstrip(b"=").decode()
+    sig = base64.b64encode(bytes(kp.sign_message(start["message"].encode()))).decode()
+    assert c.post("/api/auth/verify", json={"challenge": f"{forged}.{mac}", "signature": sig}).status_code == 400
+    assert c.post("/api/auth/verify", json={"challenge": "garbage", "signature": sig}).status_code == 400
+
+
+def test_ledger_style_offchain_signature_is_accepted(env):
+    import struct
+    c = client(env)
+    kp = env["user"]
+    start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
+    msg = start["message"].encode()
+    wrapped = b"\xffsolana offchain" + bytes([0, 1]) + struct.pack("<H", len(msg)) + msg
+    sig = base64.b64encode(bytes(kp.sign_message(wrapped))).decode()
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 200
+    # a signature over some other message, even in the envelope, still fails
+    other = b"\xffsolana offchain" + bytes([0, 1]) + struct.pack("<H", 5) + b"hello"
+    start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
+    sig = base64.b64encode(bytes(kp.sign_message(other))).decode()
+    assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 401
