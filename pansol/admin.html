@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Pansol Admin</title>
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/assets/pansol-coin.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Bowlby+One&family=Martian+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+
+<header class="wrap bar">
+  <a class="brand" href="/" aria-label="Pansol home">
+    <img src="/assets/pansol-coin.jpg" alt="" width="34" height="34">
+    PANSOL
+  </a>
+  <nav class="nav" aria-label="Pansol">
+    <a href="/">Launch</a>
+    <a href="/tracker">Meme Tracker</a>
+    <a href="/admin" aria-current="page">Admin</a>
+  </nav>
+  <div class="account" id="account" hidden>
+    <span class="chip admin"><span class="dot" aria-hidden="true"></span><span id="walletShort"></span></span>
+    <button class="link-btn" id="signOut" type="button">Sign out</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <p class="loading" id="loading">Loading</p>
+
+  <section class="intro" id="signedOut" hidden>
+    <p class="eyebrow">Pansol Admin</p>
+    <h1 class="title">Tracker users</h1>
+    <p class="lede">Connect the admin wallet in Phantom. Only wallets on the admin list can open this page's data.</p>
+    <div class="actions">
+      <button class="btn" id="connect" type="button"><span id="connectLabel">Connect admin wallet</span></button>
+      <a class="btn" id="openInPhantom" href="#" hidden>Open in Phantom</a>
+      <a class="btn ghost" id="getPhantom" href="https://phantom.com/download" target="_blank" rel="noopener" hidden>Get Phantom</a>
+    </div>
+    <p class="msg" id="signInMsg" role="status"></p>
+  </section>
+
+  <section class="intro" id="notAdmin" hidden>
+    <p class="eyebrow">Pansol Admin</p>
+    <h1 class="title">Not an admin wallet</h1>
+    <p class="lede">You're signed in as <span id="notAdminWallet" class="mute"></span>. This wallet isn't on the admin list, so there is nothing to show here.</p>
+    <div class="actions">
+      <button class="btn" id="switchWallet" type="button">Use another wallet</button>
+      <a class="btn ghost" href="/tracker">Go to the tracker</a>
+    </div>
+  </section>
+
+  <section id="app" hidden>
+    <div class="tiles" role="group" aria-label="Totals">
+      <div class="tile"><p class="label">Users</p><b id="statUsers">—</b></div>
+      <div class="tile"><p class="label">New, 24h</p><b id="statNew">—</b></div>
+      <div class="tile"><p class="label">Active, 24h</p><b id="statActive">—</b></div>
+      <div class="tile"><p class="label">Value tracked</p><b id="statValue">—</b></div>
+    </div>
+
+    <div class="toolbar">
+      <label class="label" for="search" hidden>Search wallets</label>
+      <input type="search" id="search" placeholder="Search a wallet address" autocomplete="off" spellcheck="false">
+      <select id="sort" aria-label="Sort users">
+        <option value="last_seen">Last seen</option>
+        <option value="first_seen">Newest</option>
+        <option value="value_usd">Portfolio value</option>
+        <option value="sign_ins">Sign-ins</option>
+      </select>
+      <a class="btn ghost small" href="/api/admin/users.csv" download>Export CSV</a>
+      <button class="btn ghost small" id="refresh" type="button">Refresh</button>
+    </div>
+    <p class="msg" id="appMsg" role="status"></p>
+
+    <div class="table-wrap">
+      <table class="users">
+        <thead>
+          <tr>
+            <th scope="col">Wallet</th>
+            <th scope="col">First seen</th>
+            <th scope="col">Last seen</th>
+            <th scope="col" class="num">Sign-ins</th>
+            <th scope="col" class="num">Portfolio</th>
+            <th scope="col" class="num">Coins</th>
+            <th scope="col" class="num">Watchlist</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="empty" id="empty" hidden>No one has signed in to the tracker yet. Share <b>/tracker</b> to get your first users.</p>
+  </section>
+</main>
+
+<dialog class="detail" id="detail" aria-labelledby="detailTitle">
+  <div class="detail-body">
+    <div class="detail-top">
+      <div style="min-width:0">
+        <p class="label" id="detailTitle">Wallet</p>
+        <p class="addr" id="detailAddr"></p>
+      </div>
+      <button class="link-btn" id="detailClose" type="button">Close</button>
+    </div>
+    <div class="detail-links">
+      <button class="btn ghost small" id="detailCopy" type="button">Copy address</button>
+      <a class="btn ghost small" id="detailSolscan" target="_blank" rel="noopener noreferrer">Solscan</a>
+      <button class="btn small" id="detailLive" type="button">Refresh live</button>
+    </div>
+    <p class="msg" id="detailMsg" role="status"></p>
+    <dl class="facts" id="detailFacts"></dl>
+    <div>
+      <p class="label">Coins at last check</p>
+      <div class="coins" id="detailHoldings"></div>
+    </div>
+    <div>
+      <p class="label">Watchlist</p>
+      <ul class="mint-list" id="detailWatch"></ul>
+    </div>
+  </div>
+</dialog>
+
+<script src="/assets/wallet.js"></script>
+<script src="/assets/admin.js"></script>
+</body>
+</html>

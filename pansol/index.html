@@ -85,6 +85,21 @@ a { color: inherit; }
   gap: 8px;
 }
 .sol-mark { width: 16px; height: 13px; flex: none; }
+.bar-right { display: flex; align-items: center; gap: 10px 20px; }
+.tracker-link {
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+.tracker-link:hover { border-color: var(--gold); color: var(--gold); }
+@media (max-width: 520px) { .chain { display: none; } }
 
 /* ---------- hero ---------- */
 .hero {
@@ -404,13 +419,16 @@ footer p { margin: 0; max-width: 80ch; }
     <img src="assets/pansol-coin.jpg" alt="" width="34" height="34">
     PANSOL
   </a>
-  <span class="chain">
-    <svg class="sol-mark" viewBox="0 0 32 26" aria-hidden="true">
-      <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14f1d9"/><stop offset="1" stop-color="#9945ff"/></linearGradient></defs>
-      <path fill="url(#sg)" d="M6 0h26l-6 6H0zM0 10h26l6 6H6zM6 20h26l-6 6H0z"/>
-    </svg>
-    Built on Solana
-  </span>
+  <div class="bar-right">
+    <span class="chain">
+      <svg class="sol-mark" viewBox="0 0 32 26" aria-hidden="true">
+        <defs><linearGradient id="sg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#14f1d9"/><stop offset="1" stop-color="#9945ff"/></linearGradient></defs>
+        <path fill="url(#sg)" d="M6 0h26l-6 6H0zM0 10h26l6 6H6zM6 20h26l-6 6H0z"/>
+      </svg>
+      Built on Solana
+    </span>
+    <a class="tracker-link" href="/tracker">Meme Tracker</a>
+  </div>
 </header>
 
 <main id="top">
