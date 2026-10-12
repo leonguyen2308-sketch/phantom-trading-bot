@@ -14,6 +14,5 @@ ENV HOST=0.0.0.0 \
     PORT=8080 \
     PANSOL_DB=/data/pansol.db \
     FORWARDED_ALLOW_IPS=*
-VOLUME /data
 EXPOSE 8080
 CMD ["python", "-m", "pansol"]
