@@ -117,4 +117,4 @@ cap, 24h volume, price change and a chart link. Data comes from GeckoTerminal (f
 scripts/install-mac-service.sh trending     # keep it running on your Mac
 ```
 
-Settings are the `X_*` and `TRENDING_*` lines in `.env`. Each coin is posted at most once a day.
+Posts to a Telegram channel (free: set `TELEGRAM_BOT_TOKEN` and `TRENDING_TELEGRAM_CHAT`) and/or X. Settings are the `TRENDING_*` lines in `.env`. Each coin is posted at most once a day.

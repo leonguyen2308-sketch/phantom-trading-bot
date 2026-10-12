@@ -41,3 +41,11 @@ def test_posts_once_skips_majors_and_repeats(tmp_path):
     for _ in range(2):
         run(p, tmp_path / "s.json", network="solana", per_run=5, once=True, http=_http(), clock=lambda: 1000.0)
     assert len(p.posts) == 1 and "POPCAT" in p.posts[0]
+
+
+def test_telegram_channel_gets_the_post():
+    from phantom.alerts import Fanout, Telegram
+    sent = []
+    tg = Telegram("T", "@chan", http=httpx.Client(transport=httpx.MockTransport(lambda r: sent.append(r) or httpx.Response(200, json={"ok": True}))))
+    Fanout(tg).post("hello")
+    assert b'"chat_id":"@chan"' in sent[0].content.replace(b" ", b"")

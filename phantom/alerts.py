@@ -21,6 +21,9 @@ class Telegram:
     def send(self, text: str) -> None:
         self.http.post(f"{self._url}/sendMessage", json={"chat_id": self.chat_id, "text": text[:4000]}).raise_for_status()
 
+    def post(self, text: str) -> None:
+        self.send(text)
+
     def listen(self, handlers: dict[str, Callable[[], str]]) -> threading.Thread:
         """Poll for commands like /kill and /status in a background thread."""
         def loop() -> None:
@@ -101,6 +104,18 @@ class Fanout:
                 c.send(text)
             except Exception as e:
                 log.warning("%s send failed: %s", type(c).__name__, type(e).__name__)
+
+    def post(self, text: str) -> None:
+        """Like send, but raises if every channel failed (so the coin isn't marked as posted)."""
+        ok = False
+        for c in self.channels:
+            try:
+                c.post(text)
+                ok = True
+            except Exception as e:
+                log.warning("%s post failed: %s", type(c).__name__, type(e).__name__)
+        if not ok:
+            raise RuntimeError("no channel accepted the post")
 
     def listen(self, handlers):
         for c in self.channels:

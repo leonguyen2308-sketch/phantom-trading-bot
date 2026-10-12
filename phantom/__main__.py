@@ -360,12 +360,18 @@ def cmd_wallet_check() -> None:
 
 
 def cmd_trending(once: bool, dry_run: bool) -> None:
-    from phantom.alerts import XPoster
+    from phantom.alerts import Fanout, Telegram, XPoster
     from phantom.trending import run
+    channels = []
     keys = [os.environ.get(k, "") for k in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")]
-    if not dry_run and not all(keys):
-        raise SystemExit("Add X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET to .env (or use --dry-run).")
-    run(XPoster(*keys) if all(keys) else None, STATE / "trending_posted.json",
+    if all(keys):
+        channels.append(XPoster(*keys))
+    tg_chat = os.environ.get("TRENDING_TELEGRAM_CHAT", "").strip()
+    if tg_chat and os.environ.get("TELEGRAM_BOT_TOKEN"):
+        channels.append(Telegram(os.environ["TELEGRAM_BOT_TOKEN"], tg_chat))
+    if not dry_run and not channels:
+        raise SystemExit("Add TELEGRAM_BOT_TOKEN and TRENDING_TELEGRAM_CHAT (or the X_* keys) to .env, or use --dry-run.")
+    run(Fanout(*channels), STATE / "trending_posted.json",
         network=os.environ.get("TRENDING_NETWORK", "solana").strip(),
         every_min=float(os.environ.get("TRENDING_EVERY_MIN", "30")),
         per_run=int(os.environ.get("TRENDING_PER_RUN", "1")),
