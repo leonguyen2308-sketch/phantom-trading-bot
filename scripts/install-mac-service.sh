@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Keep the bot running on your Mac: starts at login, restarts if it crashes, and stops the Mac
-# from idle-sleeping while it runs. Usage: scripts/install-mac-service.sh [paper|live]
+# from idle-sleeping while it runs. Usage: scripts/install-mac-service.sh [paper|live|trending]
 #   Remove with: launchctl unload ~/Library/LaunchAgents/com.phantom.bot.plist
+#   (trending runs separately, alongside the bot: com.phantom.trending.plist)
 set -euo pipefail
 MODE="${1:-paper}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLIST="$HOME/Library/LaunchAgents/com.phantom.bot.plist"
+LABEL="com.phantom.bot"
+if [ "$MODE" = "trending" ]; then LABEL="com.phantom.trending"; fi
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 mkdir -p "$DIR/logs" "$HOME/Library/LaunchAgents"
 
 cat > "$PLIST" <<EOF
@@ -13,7 +16,7 @@ cat > "$PLIST" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.phantom.bot</string>
+  <key>Label</key><string>$LABEL</string>
   <key>WorkingDirectory</key><string>$DIR</string>
   <key>ProgramArguments</key>
   <array>
@@ -25,8 +28,8 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>$DIR/logs/service.out</string>
-  <key>StandardErrorPath</key><string>$DIR/logs/service.err</string>
+  <key>StandardOutPath</key><string>$DIR/logs/$MODE.out</string>
+  <key>StandardErrorPath</key><string>$DIR/logs/$MODE.err</string>
 </dict>
 </plist>
 EOF

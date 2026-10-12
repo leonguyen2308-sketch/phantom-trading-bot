@@ -66,8 +66,11 @@ class XPoster:
     def send(self, text: str) -> None:
         if not self.should_post(text):
             return
-        tweet = f"{text}\n{self.hashtags}".strip() if self.hashtags else text
-        r = self.http.post(self.URL, json={"text": tweet[:280]}, headers={"Authorization": self._auth("POST", self.URL)})
+        self.post(f"{text}\n{self.hashtags}".strip() if self.hashtags else text)
+
+    def post(self, text: str) -> None:
+        """Post any text as-is (no trade filter, no hashtags)."""
+        r = self.http.post(self.URL, json={"text": text[:280]}, headers={"Authorization": self._auth("POST", self.URL)})
         r.raise_for_status()
 
     def _auth(self, method: str, url: str, nonce: str | None = None, ts: str | None = None) -> str:

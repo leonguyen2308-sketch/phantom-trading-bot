@@ -105,3 +105,16 @@ dashboard/index.html    the dashboard (sample data when opened on its own)
 ```
 
 Run the tests with `uv run --group dev pytest`.
+
+## Post trending coins to X (optional)
+
+Separate from trading: every hour it posts a trending coin with its contract address (CA), market
+cap, 24h volume, price change and a chart link. Data comes from GeckoTerminal (free, no key).
+
+```bash
+./run.sh trending --once --dry-run          # preview, posts nothing
+./run.sh trending                           # post every TRENDING_EVERY_MIN minutes
+scripts/install-mac-service.sh trending     # keep it running on your Mac
+```
+
+Settings are the `X_*` and `TRENDING_*` lines in `.env`. Each coin is posted at most once a day.

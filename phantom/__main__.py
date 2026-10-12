@@ -359,6 +359,21 @@ def cmd_wallet_check() -> None:
     print(f"  Quote check: $10 USDC -> {q.expected_out:.8f} cbBTC (implied {q.implied_price:,.0f} USD/BTC, impact {q.price_impact_bps:.1f} bps). Nothing was sent.")
 
 
+def cmd_trending(once: bool, dry_run: bool) -> None:
+    from phantom.alerts import XPoster
+    from phantom.trending import run
+    keys = [os.environ.get(k, "") for k in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")]
+    if not dry_run and not all(keys):
+        raise SystemExit("Add X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET to .env (or use --dry-run).")
+    run(XPoster(*keys) if all(keys) else None, STATE / "trending_posted.json",
+        network=os.environ.get("TRENDING_NETWORK", "solana").strip(),
+        every_min=float(os.environ.get("TRENDING_EVERY_MIN", "60")),
+        per_run=int(os.environ.get("TRENDING_PER_RUN", "1")),
+        min_vol=float(os.environ.get("TRENDING_MIN_VOLUME_USD", "50000")),
+        hashtags=os.environ.get("TRENDING_HASHTAGS", "#crypto #memecoin").strip(),
+        once=once, dry_run=dry_run)
+
+
 def main() -> None:
     load_env(".env")
     ap = argparse.ArgumentParser(prog="python -m phantom", description="Phantom trading bot")
@@ -381,6 +396,9 @@ def main() -> None:
     sub.add_parser("reset", help="reset the kill switch (asks for confirmation)")
     sub.add_parser("jev-test", help="make one real Jev call to check your key")
     sub.add_parser("wallet-check", help="check the bot wallet, balances and a Jupiter quote (sends nothing)")
+    tr = sub.add_parser("trending", help="post trending coins (CA, market cap, volume) to X")
+    tr.add_argument("--once", action="store_true", help="one round, then stop")
+    tr.add_argument("--dry-run", action="store_true", help="print the posts instead of posting")
     a = ap.parse_args()
     setup_logging()
     if a.cmd in ("paper", "live"):
@@ -401,6 +419,8 @@ def main() -> None:
         cmd_jev_test()
     elif a.cmd == "wallet-check":
         cmd_wallet_check()
+    elif a.cmd == "trending":
+        cmd_trending(a.once, a.dry_run)
 
 
 if __name__ == "__main__":
