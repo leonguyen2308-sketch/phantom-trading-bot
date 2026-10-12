@@ -2,6 +2,7 @@ import base64
 import csv
 import io
 import json
+import os
 
 import httpx
 import pytest
@@ -17,6 +18,25 @@ BONK = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
 WIF = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm"
 NFT = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj"
 SPAM = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"
+
+
+# Set PANSOL_TEST_DATABASE_URL=postgresql://... to run every test against PostgreSQL instead of SQLite.
+TEST_PG = os.environ.get("PANSOL_TEST_DATABASE_URL")
+_open_stores = []
+
+
+def fresh_store():
+    """An empty store. On PostgreSQL the tables are dropped first and older stores are closed."""
+    if not TEST_PG:
+        return Store(":memory:")
+    import psycopg
+    while _open_stores:
+        _open_stores.pop().close()
+    with psycopg.connect(TEST_PG, autocommit=True) as c:
+        c.execute("DROP TABLE IF EXISTS users, watchlist, used_nonces, sessions, meta")
+    store = Store(TEST_PG)
+    _open_stores.append(store)
+    return store
 
 
 class Clock:
@@ -100,7 +120,7 @@ def env():
     chain = Chain("https://rpc.test/", http=httpx.Client(transport=httpx.MockTransport(net.handler)), clock=clock)
     settings = Settings(admin_wallets=frozenset({str(admin.pubkey())}), rpc_url="https://rpc.test/",
                         db_path=":memory:", public_urls=("http://testserver",))
-    app = make_app(settings, store=Store(":memory:"), chain=chain, clock=clock)
+    app = make_app(settings, store=fresh_store(), chain=chain, clock=clock)
     return {"app": app, "net": net, "clock": clock, "admin": admin, "user": user, "other": other}
 
 
@@ -430,6 +450,10 @@ def test_settings_from_env():
     with pytest.raises(ValueError):
         Settings.from_env({"PANSOL_PUBLIC_URL": "https://pansol.xyz/path"})
     assert Settings.from_env({}).admin_wallets == frozenset()
+    # an external database (free hosts) wins over the disk path the Docker image sets
+    pg = "postgresql://u:p@db.example/pansol?sslmode=require"
+    assert Settings.from_env({"PANSOL_DB": "/data/pansol.db", "DATABASE_URL": pg}).db_path == pg
+    assert Settings.from_env({"PANSOL_DB": "/data/pansol.db"}).db_path == "/data/pansol.db"
     s = Settings.from_env({"PANSOL_PUBLIC_URL": "https://Pansol.xyz/, https://www.pansol.xyz",
                            "RAILWAY_PUBLIC_DOMAIN": "pansol.up.railway.app"})
     assert s.public_urls == ("https://pansol.xyz", "https://www.pansol.xyz", "https://pansol.up.railway.app")
@@ -443,7 +467,7 @@ def test_sign_in_domain_never_comes_from_the_host_header(env):
 
     settings = Settings(admin_wallets=frozenset(), db_path=":memory:",
                         public_urls=("https://pansol.example", "https://www.pansol.example"))
-    c = TestClient(make_app(settings, store=Store(":memory:"), chain=Chain("https://rpc.test/"), clock=env["clock"]))
+    c = TestClient(make_app(settings, store=fresh_store(), chain=Chain("https://rpc.test/"), clock=env["clock"]))
     msg = c.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())},
                  headers={"host": "www.pansol.example"}).json()["message"]
     assert msg.startswith("www.pansol.example wants you to sign in")
@@ -452,7 +476,7 @@ def test_sign_in_domain_never_comes_from_the_host_header(env):
                   headers={"host": "localhost:8080"}).status_code == 400
 
     # with nothing configured, only this computer can sign in
-    local = TestClient(make_app(Settings(db_path=":memory:"), store=Store(":memory:"), chain=Chain("https://rpc.test/"),
+    local = TestClient(make_app(Settings(db_path=":memory:"), store=fresh_store(), chain=Chain("https://rpc.test/"),
                                 clock=env["clock"]), base_url="http://127.0.0.1:8080")
     msg = local.post("/api/auth/nonce", json={"wallet": str(env["user"].pubkey())}).json()["message"]
     assert msg.startswith("127.0.0.1:8080 wants you to sign in")
@@ -460,14 +484,15 @@ def test_sign_in_domain_never_comes_from_the_host_header(env):
 
 def test_unsigned_challenges_store_nothing(env):
     """Asking for challenges is free for the server, so a flood can't lock anyone out."""
-    store = Store(":memory:")
+    store = fresh_store()
     app = make_app(Settings(admin_wallets=frozenset({str(env["admin"].pubkey())}), db_path=":memory:",
                             public_urls=("http://testserver",)), store=store, chain=Chain("https://rpc.test/"),
                    clock=env["clock"])
     c = TestClient(app)
     for _ in range(300):
         assert c.post("/api/auth/nonce", json={"wallet": "11111111111111111111111111111111"}).status_code == 200
-    counts = {t: store.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("used_nonces", "sessions", "users")}
+    with store.db.tx() as t:
+        counts = {name: t.one(f"SELECT COUNT(*) AS n FROM {name}")["n"] for name in ("used_nonces", "sessions", "users")}
     assert counts == {"used_nonces": 0, "sessions": 0, "users": 0}
     assert sign_in(c, env["admin"]).json()["isAdmin"] is True
 

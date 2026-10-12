@@ -49,7 +49,7 @@ SECURITY_HEADERS = {
 class Settings:
     admin_wallets: frozenset[str] = frozenset()
     rpc_url: str = DEFAULT_RPC
-    db_path: str = "state/pansol.db"
+    db_path: str = "state/pansol.db"     # a SQLite file, or a postgres:// URL
     public_urls: tuple[str, ...] = ()   # addresses the site is served at; sign-in works only on these
     pansol_mint: str | None = None  # set after launch to pin Pansol on every tracker
     watch_limit: int = 30
@@ -86,7 +86,8 @@ class Settings:
         return cls(
             admin_wallets=frozenset(admins),
             rpc_url=env.get("SOLANA_RPC_URL", "").strip() or DEFAULT_RPC,
-            db_path=env.get("PANSOL_DB", "").strip() or "state/pansol.db",
+            # DATABASE_URL (an external PostgreSQL) wins over PANSOL_DB, which the Docker image sets to its disk.
+            db_path=env.get("DATABASE_URL", "").strip() or env.get("PANSOL_DB", "").strip() or "state/pansol.db",
             public_urls=tuple(dict.fromkeys(urls)),
             pansol_mint=mint,
         )

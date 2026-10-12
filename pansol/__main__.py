@@ -15,7 +15,8 @@ from phantom.config import install_redaction, load_env
 def main() -> None:
     load_env(".env")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    install_redaction()   # keeps an RPC URL with an API key in it out of the logs
+    # Keep the RPC URL (API key) and the database URL (password) out of the logs.
+    install_redaction([os.environ.get("PANSOL_DB", ""), os.environ.get("DATABASE_URL", "")])
     try:
         settings = Settings.from_env()
     except ValueError as e:
@@ -29,9 +30,13 @@ def main() -> None:
         logging.warning("PANSOL_PUBLIC_URL is empty: sign-in only works on localhost until you set it.")
 
     port = int(os.environ.get("PORT", "8080"))
+    try:
+        app = make_app(settings)
+    except Exception as e:   # most often a wrong database URL or an unreachable database
+        sys.exit(f"Could not open the database: {type(e).__name__}: {e}")
     print(f"Pansol: http://{host}:{port}   tracker: /tracker   admin: /admin")
     uvicorn.run(
-        make_app(settings),
+        app,
         host=host,
         port=port,
         proxy_headers=True,

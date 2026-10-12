@@ -1,110 +1,182 @@
-"""Tracker storage: one SQLite file with wallets, sign-ins, portfolio snapshots and watchlists."""
+"""Tracker storage: wallets, sign-ins, portfolio snapshots and watchlists.
+
+Runs on a SQLite file (local use, or a host with a disk) or on PostgreSQL when given a
+postgres:// URL (free hosts whose disk is wiped on every restart, with a free Neon database).
+The SQL below is written once and runs on both.
+"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-  wallet      TEXT PRIMARY KEY,
-  first_seen  INTEGER NOT NULL,
-  last_seen   INTEGER NOT NULL,
-  sign_ins    INTEGER NOT NULL DEFAULT 0,
-  value_usd   REAL,
-  token_count INTEGER,
-  holdings    TEXT,
-  checked_at  INTEGER
-);
-CREATE TABLE IF NOT EXISTS watchlist (
-  wallet   TEXT NOT NULL,
-  mint     TEXT NOT NULL,
-  added_at INTEGER NOT NULL,
-  PRIMARY KEY (wallet, mint)
-);
-CREATE TABLE IF NOT EXISTS used_nonces (
-  nonce      TEXT PRIMARY KEY,
-  expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS sessions (
-  token_hash TEXT PRIMARY KEY,
-  wallet     TEXT NOT NULL,
-  expires_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS meta (
-  key   TEXT PRIMARY KEY,
-  value BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS users_last_seen ON users (last_seen);
-"""
+SCHEMA = [
+    """CREATE TABLE IF NOT EXISTS users (
+         wallet      TEXT PRIMARY KEY,
+         first_seen  BIGINT NOT NULL,
+         last_seen   BIGINT NOT NULL,
+         sign_ins    BIGINT NOT NULL DEFAULT 0,
+         value_usd   DOUBLE PRECISION,
+         token_count BIGINT,
+         holdings    TEXT,
+         checked_at  BIGINT
+       )""",
+    """CREATE TABLE IF NOT EXISTS watchlist (
+         wallet   TEXT NOT NULL,
+         mint     TEXT NOT NULL,
+         added_at BIGINT NOT NULL,
+         PRIMARY KEY (wallet, mint)
+       )""",
+    """CREATE TABLE IF NOT EXISTS used_nonces (
+         nonce      TEXT PRIMARY KEY,
+         expires_at BIGINT NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS sessions (
+         token_hash TEXT PRIMARY KEY,
+         wallet     TEXT NOT NULL,
+         expires_at BIGINT NOT NULL
+       )""",
+    """CREATE TABLE IF NOT EXISTS meta (
+         key   TEXT PRIMARY KEY,
+         value TEXT NOT NULL
+       )""",
+    "CREATE INDEX IF NOT EXISTS users_last_seen ON users (last_seen)",
+]
 
 SUMMARY = "u.wallet, u.first_seen, u.last_seen, u.sign_ins, u.value_usd, u.token_count, u.checked_at"
 WATCH_COUNT = "(SELECT COUNT(*) FROM watchlist w WHERE w.wallet = u.wallet) AS watch_count"
 
 
-class Store:
-    def __init__(self, path: str | Path):
-        path = str(path)
+def is_postgres(target: str) -> bool:
+    return target.startswith(("postgres://", "postgresql://"))
+
+
+class _Tx:
+    """One transaction. SQL uses ? placeholders; they become %s on PostgreSQL."""
+
+    def __init__(self, conn, postgres: bool):
+        self.conn = conn
+        self.postgres = postgres
+
+    def _exec(self, sql: str, params: tuple):
+        return self.conn.execute(sql.replace("?", "%s") if self.postgres else sql, params)
+
+    def all(self, sql: str, params: tuple = ()) -> list[dict]:
+        return [dict(r) for r in self._exec(sql, params).fetchall()]
+
+    def one(self, sql: str, params: tuple = ()) -> dict | None:
+        row = self._exec(sql, params).fetchone()
+        return dict(row) if row else None
+
+    def run(self, sql: str, params: tuple = ()) -> int:
+        """Rows changed."""
+        return self._exec(sql, params).rowcount
+
+
+class _SQLite:
+    postgres = False
+
+    def __init__(self, path: str):
         if path != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
         self.lock = threading.Lock()
-        with self.lock, self.db:
-            if path != ":memory:":
-                self.db.execute("PRAGMA journal_mode=WAL")
-            self.db.executescript(SCHEMA)
+        if path != ":memory:":
+            self.conn.execute("PRAGMA journal_mode=WAL")
+
+    @contextmanager
+    def tx(self) -> Iterator[_Tx]:
+        with self.lock, self.conn:          # commits, or rolls back on an error
+            yield _Tx(self.conn, False)
+
+
+class _Postgres:
+    postgres = True
+
+    def __init__(self, url: str):
+        try:
+            from psycopg.rows import dict_row
+            from psycopg_pool import ConnectionPool
+        except ImportError as e:  # pragma: no cover - depends on the install
+            raise RuntimeError('PostgreSQL needs: pip install "psycopg[binary,pool]"') from e
+        self.pool = ConnectionPool(
+            url,
+            min_size=1,
+            max_size=5,
+            # Free databases drop idle connections; test each one before use.
+            check=ConnectionPool.check_connection,
+            # Poolers (e.g. Neon's "-pooler" address) can't keep prepared statements between transactions.
+            kwargs={"row_factory": dict_row, "prepare_threshold": None},
+            open=True,
+        )
+
+    @contextmanager
+    def tx(self) -> Iterator[_Tx]:
+        with self.pool.connection() as conn:  # commits, or rolls back on an error
+            yield _Tx(conn, True)
+
+
+class Store:
+    def __init__(self, target: str | Path):
+        target = str(target)
+        self.db = _Postgres(target) if is_postgres(target) else _SQLite(target)
+        with self.db.tx() as t:
+            for statement in SCHEMA:
+                t.run(statement)
+
+    def close(self) -> None:
+        if self.db.postgres:
+            self.db.pool.close()
+        else:
+            self.db.conn.close()
 
     def secret(self, make: Callable[[], bytes]) -> bytes:
         """The key that signs sign-in challenges, created once and kept with the data."""
-        with self.lock, self.db:
-            row = self.db.execute("SELECT value FROM meta WHERE key = 'challenge_secret'").fetchone()
-            if row:
-                return bytes(row["value"])
-            value = make()
-            self.db.execute("INSERT INTO meta VALUES ('challenge_secret', ?)", (value,))
-            return value
+        with self.db.tx() as t:
+            t.run("INSERT INTO meta (key, value) VALUES ('challenge_secret', ?) ON CONFLICT (key) DO NOTHING",
+                  (make().hex(),))
+            value = t.one("SELECT value FROM meta WHERE key = 'challenge_secret'")["value"]
+        return bytes(value) if isinstance(value, (bytes, memoryview)) else bytes.fromhex(value)
 
     # ---------- sign-in nonces: stored only once a signature checks out ----------
 
     def use_nonce(self, nonce: str, expires_at: int, now: int) -> bool:
         """Mark the nonce used. False if it already was, so a signature can never be replayed."""
-        with self.lock, self.db:
-            self.db.execute("DELETE FROM used_nonces WHERE expires_at <= ?", (now,))
-            try:
-                self.db.execute("INSERT INTO used_nonces VALUES (?, ?)", (nonce, expires_at))
-            except sqlite3.IntegrityError:
-                return False
-            return True
+        with self.db.tx() as t:
+            t.run("DELETE FROM used_nonces WHERE expires_at <= ?", (now,))
+            added = t.run("INSERT INTO used_nonces (nonce, expires_at) VALUES (?, ?) ON CONFLICT (nonce) DO NOTHING",
+                          (nonce, expires_at))
+        return added == 1
 
     # ---------- sessions ----------
 
     def add_session(self, token_hash: str, wallet: str, expires_at: int, now: int) -> None:
-        with self.lock, self.db:
-            self.db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-            self.db.execute("INSERT INTO sessions VALUES (?, ?, ?)", (token_hash, wallet, expires_at))
+        with self.db.tx() as t:
+            t.run("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+            t.run("INSERT INTO sessions (token_hash, wallet, expires_at) VALUES (?, ?, ?)",
+                  (token_hash, wallet, expires_at))
 
     def session_wallet(self, token_hash: str, now: int) -> str | None:
-        with self.lock:
-            row = self.db.execute(
-                "SELECT wallet FROM sessions WHERE token_hash = ? AND expires_at > ?", (token_hash, now)
-            ).fetchone()
+        with self.db.tx() as t:
+            row = t.one("SELECT wallet FROM sessions WHERE token_hash = ? AND expires_at > ?", (token_hash, now))
         return row["wallet"] if row else None
 
     def drop_session(self, token_hash: str) -> None:
-        with self.lock, self.db:
-            self.db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        with self.db.tx() as t:
+            t.run("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
     # ---------- users ----------
 
     def record_sign_in(self, wallet: str, now: int) -> None:
-        with self.lock, self.db:
-            self.db.execute(
+        with self.db.tx() as t:
+            t.run(
                 """INSERT INTO users (wallet, first_seen, last_seen, sign_ins) VALUES (?, ?, ?, 1)
-                   ON CONFLICT(wallet) DO UPDATE SET last_seen = excluded.last_seen, sign_ins = sign_ins + 1""",
+                   ON CONFLICT (wallet) DO UPDATE SET last_seen = excluded.last_seen, sign_ins = users.sign_ins + 1""",
                 (wallet, now, now),
             )
 
@@ -114,82 +186,79 @@ class Store:
             {k: h.get(k) for k in ("mint", "symbol", "name", "amount", "price_usd", "value_usd")}
             for h in holdings
         ]
-        with self.lock, self.db:
-            self.db.execute(
+        with self.db.tx() as t:
+            t.run(
                 "UPDATE users SET value_usd = ?, token_count = ?, holdings = ?, checked_at = ? WHERE wallet = ?",
                 (value_usd, token_count, json.dumps(slim), now, wallet),
             )
 
     def touch(self, wallet: str, now: int) -> None:
         """The wallet's owner used the tracker (not called when the admin looks at it)."""
-        with self.lock, self.db:
-            self.db.execute("UPDATE users SET last_seen = ? WHERE wallet = ?", (now, wallet))
+        with self.db.tx() as t:
+            t.run("UPDATE users SET last_seen = ? WHERE wallet = ?", (now, wallet))
 
     def users(self, limit: int | None = None) -> list[dict]:
         """Most recently seen first, without the holdings snapshot (that is per user, in user())."""
-        sql = f"SELECT {SUMMARY}, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC"
-        with self.lock:
-            rows = self.db.execute(sql + (" LIMIT ?" if limit else ""), (limit,) if limit else ()).fetchall()
-        return [dict(r) for r in rows]
+        sql = f"SELECT {SUMMARY}, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC, u.wallet"
+        with self.db.tx() as t:
+            return t.all(sql + " LIMIT ?", (limit,)) if limit else t.all(sql)
 
     def users_with_holdings(self) -> Iterator[dict]:
         """Every user with their snapshot, a page at a time (for the CSV export)."""
         offset = 0
         while True:
-            with self.lock:
-                rows = self.db.execute(
-                    f"SELECT u.*, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC LIMIT 500 OFFSET ?", (offset,)
-                ).fetchall()
+            with self.db.tx() as t:
+                rows = t.all(
+                    f"SELECT u.*, {WATCH_COUNT} FROM users u ORDER BY u.last_seen DESC, u.wallet LIMIT 500 OFFSET ?",
+                    (offset,),
+                )
             if not rows:
                 return
             yield from (_user(r) for r in rows)
             offset += len(rows)
 
     def user(self, wallet: str) -> dict | None:
-        with self.lock:
-            row = self.db.execute(f"SELECT u.*, {WATCH_COUNT} FROM users u WHERE u.wallet = ?", (wallet,)).fetchone()
+        with self.db.tx() as t:
+            row = t.one(f"SELECT u.*, {WATCH_COUNT} FROM users u WHERE u.wallet = ?", (wallet,))
         return _user(row) if row else None
 
     def stats(self, now: int) -> dict:
         day_ago = now - 86400
-        with self.lock:
-            row = self.db.execute(
+        with self.db.tx() as t:
+            row = t.one(
                 """SELECT COUNT(*) AS users,
-                          COALESCE(SUM(first_seen > ?), 0) AS new_24h,
-                          COALESCE(SUM(last_seen > ?), 0) AS active_24h,
+                          COALESCE(SUM(CASE WHEN first_seen > ? THEN 1 ELSE 0 END), 0) AS new_24h,
+                          COALESCE(SUM(CASE WHEN last_seen > ? THEN 1 ELSE 0 END), 0) AS active_24h,
                           COALESCE(SUM(value_usd), 0) AS tracked_usd
                    FROM users""",
                 (day_ago, day_ago),
-            ).fetchone()
-        return dict(row)
+            )
+        return {"users": int(row["users"]), "new_24h": int(row["new_24h"]),
+                "active_24h": int(row["active_24h"]), "tracked_usd": float(row["tracked_usd"])}
 
     # ---------- watchlist ----------
 
     def watchlist(self, wallet: str) -> list[str]:
-        with self.lock:
-            rows = self.db.execute(
-                "SELECT mint FROM watchlist WHERE wallet = ? ORDER BY added_at, mint", (wallet,)
-            ).fetchall()
+        with self.db.tx() as t:
+            rows = t.all("SELECT mint FROM watchlist WHERE wallet = ? ORDER BY added_at, mint", (wallet,))
         return [r["mint"] for r in rows]
 
     def add_watch(self, wallet: str, mint: str, now: int, limit: int) -> bool:
         """False when the watchlist is full. Adding a coin twice is a no-op."""
-        with self.lock, self.db:
-            exists = self.db.execute("SELECT 1 FROM watchlist WHERE wallet = ? AND mint = ?", (wallet, mint)).fetchone()
-            if exists:
+        with self.db.tx() as t:
+            if t.one("SELECT 1 AS hit FROM watchlist WHERE wallet = ? AND mint = ?", (wallet, mint)):
                 return True
-            count = self.db.execute("SELECT COUNT(*) FROM watchlist WHERE wallet = ?", (wallet,)).fetchone()[0]
-            if count >= limit:
+            if t.one("SELECT COUNT(*) AS n FROM watchlist WHERE wallet = ?", (wallet,))["n"] >= limit:
                 return False
-            self.db.execute("INSERT INTO watchlist VALUES (?, ?, ?)", (wallet, mint, now))
+            t.run("INSERT INTO watchlist (wallet, mint, added_at) VALUES (?, ?, ?) ON CONFLICT (wallet, mint) DO NOTHING",
+                  (wallet, mint, now))
             return True
 
     def remove_watch(self, wallet: str, mint: str) -> None:
-        with self.lock, self.db:
-            self.db.execute("DELETE FROM watchlist WHERE wallet = ? AND mint = ?", (wallet, mint))
+        with self.db.tx() as t:
+            t.run("DELETE FROM watchlist WHERE wallet = ? AND mint = ?", (wallet, mint))
 
 
-def _user(row: sqlite3.Row) -> dict:
-    d = dict(row)
-    d["holdings"] = json.loads(d["holdings"]) if d.get("holdings") else []
-    return d
+def _user(row: dict) -> dict:
+    row["holdings"] = json.loads(row["holdings"]) if row.get("holdings") else []
+    return row
