@@ -23,7 +23,8 @@ def main() -> None:
     except ValueError as e:
         sys.exit(f"Config error: {e}")
     # Keep the RPC URL (API key) and the database URL and password out of the logs.
-    secrets = [os.environ.get("PANSOL_DB", ""), os.environ.get("DATABASE_URL", ""), settings.db_path]
+    raw = [os.environ.get("PANSOL_DB", ""), os.environ.get("DATABASE_URL", ""), settings.db_path]
+    secrets = [v for v in raw if is_postgres(v.strip().strip("'\""))]   # a SQLite path is not a secret
     if is_postgres(settings.db_path):
         password = urlsplit(settings.db_path).password or ""
         secrets += [password, unquote(password)]
