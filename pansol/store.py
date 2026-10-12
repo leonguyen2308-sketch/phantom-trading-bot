@@ -51,8 +51,12 @@ SUMMARY = "u.wallet, u.first_seen, u.last_seen, u.sign_ins, u.value_usd, u.token
 WATCH_COUNT = "(SELECT COUNT(*) FROM watchlist w WHERE w.wallet = u.wallet) AS watch_count"
 
 
+class Unavailable(Exception):
+    """The database did not answer in time (it is down, asleep too long, or unreachable)."""
+
+
 def is_postgres(target: str) -> bool:
-    return target.startswith(("postgres://", "postgresql://"))
+    return target.lower().startswith(("postgres://", "postgresql://"))
 
 
 class _Tx:
@@ -100,35 +104,64 @@ class _Postgres:
 
     def __init__(self, url: str):
         try:
+            import psycopg
+            from psycopg.conninfo import conninfo_to_dict
             from psycopg.rows import dict_row
-            from psycopg_pool import ConnectionPool
+            from psycopg_pool import ConnectionPool, PoolTimeout
         except ImportError as e:  # pragma: no cover - depends on the install
-            raise RuntimeError('PostgreSQL needs: pip install "psycopg[binary,pool]"') from e
+            raise RuntimeError(
+                "PostgreSQL support isn't installed. Run with: uv run --extra postgres python -m pansol "
+                '(or pip install "psycopg[binary,pool]")'
+            ) from e
+        try:
+            conninfo_to_dict(url)
+        except psycopg.ProgrammingError:
+            raise ValueError("DATABASE_URL is not a valid PostgreSQL address. "
+                             "Copy it again; special characters in the password must be percent-encoded.") from None
+        # One plain connection first, so a wrong password, host or database name fails now with the real reason.
+        psycopg.connect(url, connect_timeout=15).close()
+
+        self.down = (PoolTimeout, psycopg.OperationalError)
         self.pool = ConnectionPool(
             url,
             min_size=1,
             max_size=5,
-            # Free databases drop idle connections; test each one before use.
+            timeout=5,                        # a request waits at most 5 s for a connection, then gets a 503
+            # Free databases drop idle connections: test each one before use, and close spare ones
+            # within a minute so few are left when Neon suspends (after 5 idle minutes).
             check=ConnectionPool.check_connection,
-            max_idle=240,                     # Neon suspends after 5 idle minutes and cuts connections
-            # Poolers (e.g. Neon's "-pooler" address) can't keep prepared statements between transactions.
-            kwargs={"row_factory": dict_row, "prepare_threshold": None},
-            open=True,
+            max_idle=60,
+            kwargs={
+                "row_factory": dict_row,
+                # Poolers (e.g. Neon's "-pooler" address) can't keep prepared statements between transactions.
+                "prepare_threshold": None,
+                "connect_timeout": 5,
+                "tcp_user_timeout": 5000,     # give up on a silent network after 5 s instead of minutes
+            },
+            open=False,
         )
+        self.pool.open(wait=True, timeout=15)
 
     @contextmanager
     def tx(self) -> Iterator[_Tx]:
-        with self.pool.connection() as conn:  # commits, or rolls back on an error
-            yield _Tx(conn, True)
+        try:
+            with self.pool.connection() as conn:  # commits, or rolls back on an error
+                yield _Tx(conn, True)
+        except self.down as e:
+            raise Unavailable(str(e)) from e
 
 
 class Store:
     def __init__(self, target: str | Path):
         target = str(target)
         self.db = _Postgres(target) if is_postgres(target) else _SQLite(target)
-        with self.db.tx() as t:
-            for statement in SCHEMA:
-                t.run(statement)
+        try:
+            with self.db.tx() as t:
+                for statement in SCHEMA:
+                    t.run(statement)
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
         if self.db.postgres:
@@ -247,6 +280,8 @@ class Store:
     def add_watch(self, wallet: str, mint: str, now: int, limit: int) -> bool:
         """False when the watchlist is full. Adding a coin twice is a no-op."""
         with self.db.tx() as t:
+            # Lock this user's row first, so two adds at once can't both pass the limit check.
+            t.run("UPDATE users SET last_seen = last_seen WHERE wallet = ?", (wallet,))
             if t.one("SELECT 1 AS hit FROM watchlist WHERE wallet = ? AND mint = ?", (wallet, mint)):
                 return True
             if t.one("SELECT COUNT(*) AS n FROM watchlist WHERE wallet = ?", (wallet,))["n"] >= limit:

@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 
 from pansol import auth
 from pansol.chain import Chain, ChainError
-from pansol.store import Store
+from pansol.store import Store, Unavailable, is_postgres
 
 log = logging.getLogger("pansol.server")
 
@@ -84,11 +84,18 @@ class Settings:
         if SITE_URL_RE.match(env.get("RENDER_EXTERNAL_URL", "").strip().rstrip("/").lower()):
             urls.append(env["RENDER_EXTERNAL_URL"].strip().rstrip("/").lower())
 
+        # Pasted values often keep their quotes; an unrecognized DATABASE_URL must not silently fall back
+        # to a SQLite file that a free host wipes on every restart.
+        database_url = env.get("DATABASE_URL", "").strip().strip("'\"").strip()
+        if database_url and not is_postgres(database_url):
+            raise ValueError("DATABASE_URL must start with postgresql:// (paste only the connection string)")
+        pansol_db = env.get("PANSOL_DB", "").strip().strip("'\"").strip()
+
         return cls(
             admin_wallets=frozenset(admins),
             rpc_url=env.get("SOLANA_RPC_URL", "").strip() or DEFAULT_RPC,
             # DATABASE_URL (an external PostgreSQL) wins over PANSOL_DB, which the Docker image sets to its disk.
-            db_path=env.get("DATABASE_URL", "").strip() or env.get("PANSOL_DB", "").strip() or "state/pansol.db",
+            db_path=database_url or pansol_db or "state/pansol.db",
             public_urls=tuple(dict.fromkeys(urls)),
             pansol_mint=mint,
         )
@@ -192,6 +199,12 @@ def make_app(
         return response
 
     app.add_middleware(GZipMiddleware, minimum_size=800)
+
+    @app.exception_handler(Unavailable)
+    async def database_down(request: Request, exc: Unavailable):
+        log.warning("database unavailable on %s: %s", request.url.path, exc)
+        return JSONResponse({"detail": "The database isn't answering right now. Try again in a minute."},
+                            status_code=503, headers={"Cache-Control": "no-store", "Retry-After": "30"})
 
     @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
     def health():

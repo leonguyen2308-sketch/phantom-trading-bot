@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+from urllib.parse import urlsplit
 
 import httpx
 import pytest
@@ -21,7 +22,8 @@ NFT = "7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj"
 SPAM = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"
 
 
-# Set PANSOL_TEST_DATABASE_URL=postgresql://... to run every test against PostgreSQL instead of SQLite.
+# Set PANSOL_TEST_DATABASE_URL=postgresql://.../<name ending in "test"> to run every test against PostgreSQL.
+# It DROPS all Pansol tables in that database, so never point it at the real one.
 TEST_PG = os.environ.get("PANSOL_TEST_DATABASE_URL")
 _open_stores = []
 
@@ -30,6 +32,8 @@ def fresh_store():
     """An empty store. On PostgreSQL the tables are dropped first and older stores are closed."""
     if not TEST_PG:
         return Store(":memory:")
+    if not urlsplit(TEST_PG).path.rstrip("/").endswith("test"):
+        pytest.exit("PANSOL_TEST_DATABASE_URL must name a database ending in 'test' (the tests drop its tables)")
     import psycopg
     while _open_stores:
         _open_stores.pop().close()
@@ -462,6 +466,29 @@ def test_settings_from_env():
     pg = "postgresql://u:p@db.example/pansol?sslmode=require"
     assert Settings.from_env({"PANSOL_DB": "/data/pansol.db", "DATABASE_URL": pg}).db_path == pg
     assert Settings.from_env({"PANSOL_DB": "/data/pansol.db"}).db_path == "/data/pansol.db"
+    assert Settings.from_env({"DATABASE_URL": f' "{pg}" '}).db_path == pg            # pasted with quotes
+    assert Settings.from_env({"DATABASE_URL": "PostgreSQL://u:p@h/db"}).db_path == "PostgreSQL://u:p@h/db"
+    with pytest.raises(ValueError):                                                    # never a silent SQLite fallback
+        Settings.from_env({"DATABASE_URL": "psql 'postgresql://u:p@h/db'"})
+
+
+def test_database_outage_answers_503_fast(env):
+    from pansol.store import Unavailable
+
+    def down(*a, **k):
+        raise Unavailable("connection refused")
+
+    c = client(env)
+    sign_in(c, env["user"])
+    import pansol.store as store_mod
+    original = store_mod.Store.session_wallet
+    store_mod.Store.session_wallet = down
+    try:
+        r = c.get("/api/portfolio")
+    finally:
+        store_mod.Store.session_wallet = original
+    assert r.status_code == 503 and "database" in r.json()["detail"]
+    assert c.get("/healthz").status_code == 200
     s = Settings.from_env({"PANSOL_PUBLIC_URL": "https://Pansol.xyz/, https://www.pansol.xyz",
                            "RAILWAY_PUBLIC_DOMAIN": "pansol.up.railway.app"})
     assert s.public_urls == ("https://pansol.xyz", "https://www.pansol.xyz", "https://pansol.up.railway.app")
