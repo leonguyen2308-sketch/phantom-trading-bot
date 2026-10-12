@@ -20,6 +20,7 @@ from typing import Callable, Mapping
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -180,9 +181,22 @@ def make_app(
         response = await call_next(request)
         for key, value in SECURITY_HEADERS.items():
             response.headers.setdefault(key, value)
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif path.startswith("/assets/"):
+            # Images and versioned scripts: let browsers keep them (free hosting meters bandwidth).
+            response.headers["Cache-Control"] = "public, max-age=604800"
+        else:
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
+
+    app.add_middleware(GZipMiddleware, minimum_size=800)
+
+    @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+    def health():
+        """For the host's health check and uptime pingers: answers without touching the database."""
+        return {"ok": True}
 
     # ---------- pages ----------
 

@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import re
 
 import httpx
 import pytest
@@ -436,6 +437,13 @@ def test_pages_and_headers(env):
         assert r.status_code == 200, path
         assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
     assert "noindex" in c.get("/admin").headers["x-robots-tag"]
+    assert c.get("/healthz").json() == {"ok": True} and c.head("/healthz").status_code == 200
+    assert "max-age" in c.get("/assets/pansol-coin.webp").headers["cache-control"]
+    page = c.get("/tracker", headers={"accept-encoding": "gzip"})
+    assert page.headers.get("content-encoding") == "gzip"
+    for html in ("/", "/tracker", "/admin"):                  # every image and script a page names exists
+        for ref in re.findall(r'(?:src|href)="(/assets/[^"?]+)', c.get(html).text):
+            assert c.get(ref).status_code == 200, (html, ref)
     assert c.get("/api/me").headers["cache-control"] == "no-store"
     for path in ("/server.py", "/assets/../server.py", "/store.py", "/state/pansol.db"):
         assert c.get(path).status_code == 404, path

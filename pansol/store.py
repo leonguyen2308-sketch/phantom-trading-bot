@@ -110,6 +110,7 @@ class _Postgres:
             max_size=5,
             # Free databases drop idle connections; test each one before use.
             check=ConnectionPool.check_connection,
+            max_idle=240,                     # Neon suspends after 5 idle minutes and cuts connections
             # Poolers (e.g. Neon's "-pooler" address) can't keep prepared statements between transactions.
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
