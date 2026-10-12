@@ -59,7 +59,8 @@ Neon PostgreSQL database instead. Neither needs a card.
    - Language **Docker**, Branch: the branch with this code, Root Directory: empty, Instance type **Free**.
    - Environment: `DATABASE_URL=<Neon string>`, `PANSOL_ADMIN_WALLETS=<your address>`,
      `SOLANA_RPC_URL=<your Helius URL>`.
-   - Advanced: Dockerfile Path `./pansol/Dockerfile`, Docker Build Context Directory `.`, Health Check Path `/healthz`.
+   - Advanced: Health Check Path `/healthz`. Leave Dockerfile Path and Build Context as they are
+     (the repo-root `Dockerfile` builds this site).
    - **Deploy Web Service**. The address is `https://<name>.onrender.com`; sign-in works there automatically.
 3. Optional, keeps it awake: a free [UptimeRobot](https://uptimerobot.com) HTTP monitor on
    `https://<name>.onrender.com/healthz` every 5 minutes. Without it the first visitor after 15 quiet minutes
@@ -72,7 +73,7 @@ running all the time. Neon's free database holds 1 GB, far more than this needs.
 ## Put it online with a disk (Railway)
 
 1. On [railway.com](https://railway.com): **New Project → Deploy from GitHub repo**, pick this repo and branch.
-2. **Variables**: `RAILWAY_DOCKERFILE_PATH=pansol/Dockerfile`, `PANSOL_ADMIN_WALLETS=<your address>`,
+2. **Variables**: `PANSOL_ADMIN_WALLETS=<your address>`,
    `SOLANA_RPC_URL=<your Helius URL>`.
 3. **Add a Volume** mounted at `/data` (this keeps the user list across deploys).
 4. **Settings → Networking → Generate Domain**, then redeploy once so the app learns its address.

@@ -1,0 +1,11 @@
+# Keep the build small and secrets out of it.
+.git
+.env
+.env.*
+.venv
+state/
+logs/
+data/
+reports/
+**/__pycache__/
+.pytest_cache/

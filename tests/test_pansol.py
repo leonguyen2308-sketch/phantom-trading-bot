@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -559,3 +560,8 @@ def test_ledger_style_offchain_signature_is_accepted(env):
     start = c.post("/api/auth/nonce", json={"wallet": str(kp.pubkey())}).json()
     sig = base64.b64encode(bytes(kp.sign_message(other))).decode()
     assert c.post("/api/auth/verify", json={"challenge": start["challenge"], "signature": sig}).status_code == 401
+
+
+def test_both_dockerfiles_are_the_same():
+    root = Path(__file__).resolve().parent.parent
+    assert (root / "Dockerfile").read_text() == (root / "pansol" / "Dockerfile").read_text()

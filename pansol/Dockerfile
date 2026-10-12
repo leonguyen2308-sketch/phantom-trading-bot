@@ -1,5 +1,6 @@
 # Pansol site + meme tracker. Build from the repo root:
-#   docker build -f pansol/Dockerfile -t pansol .
+#   docker build -t pansol .
+# Hosts find this file at the repo root by default; pansol/Dockerfile is an identical copy (a test keeps them equal).
 #   docker run -p 8080:8080 -v pansol-data:/data -e PANSOL_ADMIN_WALLETS=<address> pansol
 FROM python:3.12-slim
 
