@@ -108,7 +108,7 @@ Run the tests with `uv run --group dev pytest`.
 
 ## Post trending coins to X (optional)
 
-Separate from trading: every hour it posts a trending coin with its contract address (CA), market
+Separate from trading: every 30 minutes it posts a trending coin with its contract address (CA), market
 cap, 24h volume, price change and a chart link. Data comes from GeckoTerminal (free, no key).
 
 ```bash

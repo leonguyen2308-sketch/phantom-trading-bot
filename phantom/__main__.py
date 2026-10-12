@@ -367,7 +367,7 @@ def cmd_trending(once: bool, dry_run: bool) -> None:
         raise SystemExit("Add X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET to .env (or use --dry-run).")
     run(XPoster(*keys) if all(keys) else None, STATE / "trending_posted.json",
         network=os.environ.get("TRENDING_NETWORK", "solana").strip(),
-        every_min=float(os.environ.get("TRENDING_EVERY_MIN", "60")),
+        every_min=float(os.environ.get("TRENDING_EVERY_MIN", "30")),
         per_run=int(os.environ.get("TRENDING_PER_RUN", "1")),
         min_vol=float(os.environ.get("TRENDING_MIN_VOLUME_USD", "50000")),
         hashtags=os.environ.get("TRENDING_HASHTAGS", "#crypto #memecoin").strip(),
