@@ -46,6 +46,7 @@ Copy it from Phantom (tap the account name, then copy the Solana address). Sever
 | `PANSOL_DB` | `state/pansol.db` | The SQLite file with users and watchlists. Back it up |
 | `PANSOL_MINT` | none | After launch: Pansol's token address, so every tracker shows its live price |
 | `HOST`, `PORT` | `127.0.0.1`, `8080` | Use `HOST=0.0.0.0` on a server |
+| `PANSOL_KEEP_AWAKE` | on (Render only) | `0` stops the app from visiting itself every 10 minutes to stay awake |
 
 ## Put it online for free (Render + Neon)
 
@@ -62,9 +63,8 @@ Neon PostgreSQL database instead. Neither needs a card.
    - Advanced: Health Check Path `/healthz`. Leave Dockerfile Path and Build Context as they are
      (the repo-root `Dockerfile` builds this site).
    - **Deploy Web Service**. The address is `https://<name>.onrender.com`; sign-in works there automatically.
-3. Optional, keeps it awake: a free [UptimeRobot](https://uptimerobot.com) HTTP monitor on
-   `https://<name>.onrender.com/healthz` every 5 minutes. Without it the first visitor after 15 quiet minutes
-   waits about a minute.
+3. Nothing else: on Render the app visits its own `/healthz` every 10 minutes, so the free instance never
+   falls asleep and nobody waits a minute for the first page (turn it off with `PANSOL_KEEP_AWAKE=0`).
 
 Free-plan limits to know: Render includes 5 GB of traffic a month (pages are compressed and images cached to
 stretch it; past the limit the site pauses until the next month), and 750 hours a month, enough for one site

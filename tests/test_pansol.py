@@ -565,3 +565,24 @@ def test_ledger_style_offchain_signature_is_accepted(env):
 def test_both_dockerfiles_are_the_same():
     root = Path(__file__).resolve().parent.parent
     assert (root / "Dockerfile").read_text() == (root / "pansol" / "Dockerfile").read_text()
+
+
+def test_keep_awake_pings_render_address_until_stopped():
+    import threading
+    from pansol import keepalive
+
+    assert keepalive.keepalive_url({}) is None
+    assert keepalive.keepalive_url({"RENDER_EXTERNAL_URL": "https://pansol.onrender.com/"}) == "https://pansol.onrender.com/healthz"
+    assert keepalive.keepalive_url({"RENDER_EXTERNAL_URL": "https://pansol.onrender.com", "PANSOL_KEEP_AWAKE": "0"}) is None
+
+    hits, stop = [], threading.Event()
+
+    def get(url):
+        hits.append(url)
+        if len(hits) == 2:
+            raise httpx.ConnectError("down")         # a failed ping is logged, not fatal
+        if len(hits) == 3:
+            stop.set()
+
+    keepalive.run("https://x/healthz", stop, get=get, interval=0.01)
+    assert hits == ["https://x/healthz"] * 3

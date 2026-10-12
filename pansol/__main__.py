@@ -9,6 +9,7 @@ from urllib.parse import unquote, urlsplit
 
 import uvicorn
 
+from pansol import keepalive
 from pansol.server import Settings, make_app
 from pansol.store import is_postgres
 from phantom.config import install_redaction, load_env
@@ -48,6 +49,9 @@ def main() -> None:
             if secret and len(secret) >= 4:
                 message = message.replace(secret, "[REDACTED]")
         sys.exit(message)
+    ping = keepalive.keepalive_url(os.environ)
+    if ping:
+        keepalive.start(ping)
     print(f"Pansol: http://{host}:{port}   tracker: /tracker   admin: /admin")
     uvicorn.run(
         app,
