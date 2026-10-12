@@ -42,3 +42,64 @@ class Telegram:
         t = threading.Thread(target=loop, daemon=True, name="telegram")
         t.start()
         return t
+
+
+class XPoster:
+    """Posts trades (BOUGHT / SOLD) to X. Everything else (kill switch, errors) stays private.
+
+    Uses the X API v2 with OAuth 1.0a user keys from developer.x.com (app needs Read and Write).
+    """
+
+    URL = "https://api.x.com/2/tweets"
+    POST_PREFIXES = ("BOUGHT", "SOLD")
+
+    def __init__(self, api_key: str, api_secret: str, access_token: str, access_secret: str,
+                 http: httpx.Client | None = None, hashtags: str = "#BTC #Bitcoin"):
+        self._keys = (api_key, api_secret, access_token, access_secret)  # never log these
+        self.http = http or httpx.Client(timeout=20)
+        self.hashtags = hashtags.strip()
+
+    def should_post(self, text: str) -> bool:
+        body = text.split("] ", 1)[-1]  # drop the "[PAPER] " / "[LIVE] " tag
+        return body.startswith(self.POST_PREFIXES)
+
+    def send(self, text: str) -> None:
+        if not self.should_post(text):
+            return
+        tweet = f"{text}\n{self.hashtags}".strip() if self.hashtags else text
+        r = self.http.post(self.URL, json={"text": tweet[:280]}, headers={"Authorization": self._auth("POST", self.URL)})
+        r.raise_for_status()
+
+    def _auth(self, method: str, url: str, nonce: str | None = None, ts: str | None = None) -> str:
+        import base64, hashlib, hmac, secrets as _s
+        from urllib.parse import quote
+        ck, cs, tk, ts_ = self._keys
+        q = lambda s: quote(str(s), safe="")
+        params = {"oauth_consumer_key": ck, "oauth_nonce": nonce or _s.token_hex(16),
+                  "oauth_signature_method": "HMAC-SHA1", "oauth_timestamp": ts or str(int(time.time())),
+                  "oauth_token": tk, "oauth_version": "1.0"}
+        # JSON body is not part of the signature, only oauth_* params.
+        param_str = "&".join(f"{q(k)}={q(v)}" for k, v in sorted(params.items()))
+        base = "&".join([method.upper(), q(url), q(param_str)])
+        key = f"{q(cs)}&{q(ts_)}".encode()
+        params["oauth_signature"] = base64.b64encode(hmac.new(key, base.encode(), hashlib.sha1).digest()).decode()
+        return "OAuth " + ", ".join(f'{q(k)}="{q(v)}"' for k, v in sorted(params.items()))
+
+
+class Fanout:
+    """Send each alert to several channels; one failing never stops the others."""
+
+    def __init__(self, *channels):
+        self.channels = [c for c in channels if c]
+
+    def send(self, text: str) -> None:
+        for c in self.channels:
+            try:
+                c.send(text)
+            except Exception as e:
+                log.warning("%s send failed: %s", type(c).__name__, type(e).__name__)
+
+    def listen(self, handlers):
+        for c in self.channels:
+            if hasattr(c, "listen"):
+                return c.listen(handlers)

@@ -94,6 +94,14 @@ def cmd_run(mode: str, port: int) -> None:
     if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
         from phantom.alerts import Telegram
         alerts = Telegram(os.environ["TELEGRAM_BOT_TOKEN"], os.environ["TELEGRAM_CHAT_ID"])
+    telegram = alerts
+
+    x_keys = [os.environ.get(k, "") for k in ("X_API_KEY", "X_API_SECRET", "X_ACCESS_TOKEN", "X_ACCESS_SECRET")]
+    if all(x_keys) and (mode == "live" or os.environ.get("X_POST_PAPER", "no").lower() == "yes"):
+        from phantom.alerts import Fanout, XPoster
+        x = XPoster(*x_keys, hashtags=os.environ.get("X_HASHTAGS", "#BTC #Bitcoin"))
+        alerts = Fanout(telegram, x)
+        log.info("Posting trades to X")
 
     market = CoinbaseMarket()
     bot = Bot(mode=mode, broker=broker, market=market, jev=jev, cfg=cfg, limits=limits, journal=journal, kill=kill, alerts=alerts)
@@ -106,7 +114,7 @@ def cmd_run(mode: str, port: int) -> None:
 
     serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r), lock), port)
     log.info("Dashboard: http://localhost:%d", port)
-    if alerts:
+    if alerts and telegram:
         def status() -> str:
             with lock:
                 s = bot.dashboard_state()
