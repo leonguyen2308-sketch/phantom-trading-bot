@@ -1,0 +1,12 @@
+# The weekly top you copy from, best first. Used when FOMOAPI_KEY is not set in .env.
+#
+# The FOMO app hides wallet addresses. Get a trader's Solana wallet with a FOMO wallet finder
+# (see FOMO_BOT.md, step 3), then check it with: ./fomo.sh traders
+#
+# traders:
+#   - handle: some_trader
+#     wallet: PASTE_THE_SOLANA_WALLET_ADDRESS_HERE
+#     pnl_7d: 12500      # optional, shown on the dashboard
+#     win_rate: 0.66     # optional
+
+traders: []

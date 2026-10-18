@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>FOMO Copy Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout follows the copy-trading screen from the video: balance + P&L, who we copy + the fire rule,
+   balance history + copy feed, then the weekly top. Dark only: it is a trading screen. */
+:root {
+  --bg: #0b0d1c;
+  --bg-glow: #1a1640;
+  --panel: rgba(20, 23, 44, .82);
+  --panel-2: #1b1f3a;
+  --line: #2a2f52;
+  --fg: #eef0ff;
+  --fg-2: #b4b8d6;
+  --fg-3: #7c80a3;
+  --good: #3ddc97;
+  --good-bg: rgba(61, 220, 151, .12);
+  --bad: #ff5f6d;
+  --bad-bg: rgba(255, 95, 109, .14);
+  --accent: #7aa7ff;
+  --accent-bg: rgba(122, 167, 255, .14);
+  --warn: #f5a524;
+  --font-display: "Space Grotesk", -apple-system, "Segoe UI", sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 14px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  background: radial-gradient(1200px 600px at 70% -10%, var(--bg-glow), transparent 60%), var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 var(--font-data);
+  min-height: 100vh;
+  padding: 0 16px 40px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 14px; }
+.num { font-variant-numeric: tabular-nums; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; min-width: 0; }
+.label { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-3); }
+.good { color: var(--good); } .bad { color: var(--bad); } .muted { color: var(--fg-3); }
+
+.banner { border-radius: 10px; padding: 9px 14px; font-weight: 500; margin-top: 12px; }
+.banner.sim { background: var(--accent-bg); border: 1px solid var(--accent); color: var(--fg); }
+.banner.kill { background: var(--bad-bg); border: 1px solid var(--bad); color: var(--fg); }
+.banner.stop { background: rgba(245,165,36,.12); border: 1px solid var(--warn); }
+
+header { display: flex; align-items: center; gap: 14px; padding: 18px 0 4px; flex-wrap: wrap; }
+.logo { width: 52px; height: 52px; border-radius: 13px; background: linear-gradient(145deg, #f4f5ff, #b9bdd9); display: grid; place-items: center; flex: none; }
+.title h1 { font: 700 34px/1 var(--font-display); margin: 0; letter-spacing: -.01em; }
+.title .label { margin-top: 5px; }
+.head-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 999px; padding: 6px 12px; font-size: 11.5px; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px var(--good); }
+.chip.paper .dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.chip.demo .dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.chip.off .dot { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+button.kill { font: 600 11.5px var(--font-data); color: var(--bad); background: transparent; border: 1px solid var(--bad); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+button.kill:hover { background: var(--bad-bg); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.big { font: 600 30px/1.15 var(--font-data); margin-top: 4px; }
+.pnl-tile { border-left: 3px solid var(--good); }
+.pnl-tile.neg { border-left-color: var(--bad); }
+
+.who { display: flex; align-items: center; gap: 14px; }
+.avatar { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font: 600 14px var(--font-display); color: #10122a; flex: none; }
+.handle { font: 600 22px/1.1 var(--font-data); }
+.last6 { display: flex; gap: 5px; margin-top: 6px; }
+.sq { width: 16px; height: 16px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); }
+.sq.W { background: var(--good); border-color: var(--good); }
+.sq.L { background: var(--bad); border-color: var(--bad); }
+.split { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.rule { font: 600 24px/1.1 var(--font-data); margin-top: 4px; }
+.lbox { width: 34px; height: 22px; border-radius: 6px; background: var(--panel-2); border: 1px solid var(--line); display: inline-grid; place-items: center; font-weight: 600; font-size: 11px; color: var(--fg-3); }
+.lbox.on { background: var(--bad-bg); border-color: var(--bad); color: var(--bad); }
+
+.row3 { display: grid; grid-template-columns: 1.35fr 1fr; gap: 14px; }
+.chart-wrap { position: relative; height: 300px; }
+svg text { font-family: var(--font-data); }
+.feed { list-style: none; margin: 8px 0 0; padding: 0; max-height: 300px; overflow: auto; }
+.feed li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; padding: 4px 0; border-bottom: 1px dashed rgba(255,255,255,.05); font-size: 11.5px; }
+.tag { font-weight: 600; }
+.tag.COPY { color: var(--accent); } .tag.EXIT { color: var(--good); } .tag.SIG { color: var(--warn); }
+.tag.FIRE, .tag.KILL { color: var(--bad); } .tag.PICK, .tag.SCAN { color: #c4b5fd; } .tag.SKIP, .tag.WARN, .tag.STOP { color: var(--fg-3); }
+.feed .txt { color: var(--fg-2); overflow-wrap: anywhere; }
+
+.stintbar { display: flex; height: 22px; border-radius: 999px; overflow: hidden; margin: 10px 0 12px; background: var(--panel-2); }
+.stintbar div { display: flex; align-items: center; padding: 0 10px; font-size: 10.5px; font-weight: 600; color: #0f1126; white-space: nowrap; overflow: hidden; min-width: 0; }
+.cards { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
+.card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px; text-align: center; position: relative; }
+.card.following { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 24px rgba(122,167,255,.25); }
+.card .top { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--fg-3); }
+.st { font-size: 9.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: rgba(255,255,255,.06); color: var(--fg-3); }
+.st.following { background: var(--accent-bg); color: var(--accent); } .st.fired { background: var(--bad-bg); color: var(--bad); }
+.card .avatar { margin: 8px auto 6px; width: 38px; height: 38px; font-size: 12px; }
+.card.fired .avatar { filter: grayscale(1) brightness(.6); }
+.card.fired .h { text-decoration: line-through; color: var(--fg-3); }
+.card .h { font-weight: 600; overflow-wrap: anywhere; }
+.card .s { font-size: 10.5px; color: var(--fg-3); }
+.card .us { font-size: 11px; margin-top: 4px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; font-weight: 500; color: var(--fg-3); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+td { padding: 6px 4px; border-bottom: 1px dashed rgba(255,255,255,.05); }
+td.r, th.r { text-align: right; }
+.foot { color: var(--fg-3); font-size: 11px; }
+
+/* the "fired" moment */
+.overlay { position: fixed; inset: 0; background: rgba(6, 7, 18, .72); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 10; padding: 16px; }
+.swap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; justify-content: center; }
+.fcard { width: min(340px, 90vw); border-radius: 16px; padding: 18px; background: #151833; position: relative; }
+.fcard.out { border: 2px solid var(--bad); box-shadow: 0 0 40px rgba(255,95,109,.25); }
+.fcard.in { border: 2px solid var(--accent); box-shadow: 0 0 40px rgba(122,167,255,.25); }
+.fcard .label { font-weight: 600; font-size: 12px; }
+.fcard.out .label { color: var(--bad); } .fcard.in .label { color: var(--accent); }
+.stamp { position: absolute; top: -14px; right: -10px; transform: rotate(8deg); border: 3px solid var(--bad); color: var(--bad); font: 700 26px var(--font-display); padding: 2px 12px; border-radius: 8px; background: #1b0f1a; }
+.arrow { font-size: 30px; color: var(--accent); }
+
+@media (max-width: 980px) {
+  .row3 { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .row2 { grid-template-columns: 1fr; }
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .title h1 { font-size: 26px; }
+  .big { font-size: 24px; }
+  .head-right { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="simBanner" class="banner sim" hidden>SIMULATION: made-up traders and coins, fake money. These numbers say nothing about real results.</div>
+  <div id="sampleBanner" class="banner sim" hidden>SAMPLE DATA: the bot isn't running. Start it with ./fomo.sh demo (or paper) and open http://localhost:8001</div>
+  <div id="killBanner" class="banner kill" hidden></div>
+  <div id="stopBanner" class="banner stop" hidden>Daily loss limit reached: no new copies until 00:00 UTC.</div>
+
+  <header>
+    <div class="logo" aria-hidden="true">
+      <svg width="30" height="30" viewBox="0 0 32 32"><path d="M16 3c-6.6 0-11 4.6-11 11v13l3.4-2.6L12 27l4-2.6 4 2.6 3.6-2.6L27 27V14C27 7.6 22.6 3 16 3z" fill="#0f1126"/><circle cx="12" cy="14" r="2.6" fill="#f4f5ff"/><circle cx="20" cy="14" r="2.6" fill="#f4f5ff"/></svg>
+    </div>
+    <div class="title">
+      <h1>Copy Bot</h1>
+      <div class="label">copy trading mode · fomo weekly top</div>
+    </div>
+    <div class="head-right">
+      <span class="muted"><span id="copied" class="num">0</span> TRADES COPIED</span>
+      <span class="chip" title="How the bot sees the traders' trades"><span id="feedSrc">solana · jupiter</span></span>
+      <span id="modeChip" class="chip"><span class="dot"></span><span id="modeTxt">LIVE</span></span>
+      <button class="kill" id="killBtn" type="button">KILL SWITCH</button>
+    </div>
+  </header>
+
+  <section class="row2">
+    <div class="panel">
+      <div class="label">Balance</div>
+      <div class="big num" id="bal">$0.00</div>
+      <div class="muted">started at <span id="start" class="num">$0.00</span></div>
+    </div>
+    <div class="panel pnl-tile" id="pnlTile">
+      <div class="label">Total P&amp;L</div>
+      <div class="big num" id="pnl">+$0.00</div>
+      <div class="muted num"><span id="pnlPct">+0.0%</span> · <span id="mult">x1.0</span></div>
+    </div>
+  </section>
+
+  <section class="row2">
+    <div class="panel split">
+      <div class="who">
+        <div class="avatar" id="curAv">–</div>
+        <div>
+          <div class="label">Now copying</div>
+          <div class="handle" id="curHandle">nobody</div>
+          <div class="muted" id="curSub">waiting for the weekly top</div>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div class="label">Last 6</div>
+        <div class="last6" id="last6"></div>
+        <div class="muted" style="margin-top:6px">with them: <span id="withHim" class="num">$0.00</span></div>
+      </div>
+    </div>
+    <div class="panel split">
+      <div>
+        <div class="label">Fire rule</div>
+        <div class="rule"><span id="ruleN">2</span> L in a row</div>
+        <div class="muted">→ next trader from the weekly top</div>
+      </div>
+      <div style="text-align:right">
+        <div class="label">Losses in a row</div>
+        <div id="lboxes" style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px"></div>
+        <div class="muted" style="margin-top:6px"><span id="streak" class="num">0/2</span> · fired so far: <span id="fired" class="num bad">0</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="row3">
+    <div class="panel">
+      <div class="split"><div class="label">Balance history</div><div class="muted num" id="clock"></div></div>
+      <div class="chart-wrap" id="chart"></div>
+    </div>
+    <div class="panel">
+      <div class="split"><div class="label">Copy feed</div><div class="muted" id="wsState"></div></div>
+      <ul class="feed" id="feed"></ul>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="split"><div class="label">Who we copy</div><div class="muted num" id="clock2"></div></div>
+    <div class="stintbar" id="stintbar"></div>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section class="panel">
+    <div class="label">Open copies</div>
+    <table>
+      <thead><tr><th>Token</th><th>Copied from</th><th class="r">Cost</th><th class="r">Value</th><th class="r">P&amp;L</th><th class="r">Age</th></tr></thead>
+      <tbody id="pos"><tr><td colspan="6" class="muted">none</td></tr></tbody>
+    </table>
+    <p class="foot" id="limits"></p>
+  </section>
+</div>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="swap">
+    <div class="fcard out">
+      <div class="stamp">FIRED</div>
+      <div class="label">UNFOLLOWED</div>
+      <div class="who" style="margin-top:12px"><div class="avatar" id="oAv"></div><div><div class="handle" id="oH"></div><div class="muted" id="oSub"></div></div></div>
+      <div style="margin-top:12px" id="oLast" class="bad"></div>
+      <div class="muted" id="oRun"></div>
+    </div>
+    <div class="arrow">→</div>
+    <div class="fcard in">
+      <div class="label">NOW COPYING</div>
+      <div class="who" style="margin-top:12px"><div class="avatar" id="nAv"></div><div><div class="handle" id="nH"></div><div class="muted" id="nSub"></div></div></div>
+      <div style="margin-top:12px" id="nRule"></div>
+      <div class="muted" id="nRule2"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const COLORS = ["#f5a524", "#7aa7ff", "#3ddc97", "#e879f9", "#a78bfa", "#22d3ee", "#fb7185", "#facc15"];
+const $ = id => document.getElementById(id);
+const money = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const signed = v => (v >= 0 ? "+" : "-") + "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const big = v => v == null ? "" : (v >= 0 ? "+" : "-") + "$" + Math.abs(v).toLocaleString("en-US", {maximumFractionDigits: 0});
+const initials = h => {
+  const parts = (h || "").replace(/^@/, "").split(/[^a-z0-9]+/i).filter(Boolean);
+  const s = parts.length > 1 ? parts[0][0] + parts[1][0] : (parts[0] || "?").slice(0, 2);
+  return s.toUpperCase();
+};
+const hhmm = t => new Date(t * 1000).toISOString().slice(11, 19);
+let colorOf = {};
+let lastFireSeen = null;
+let firstLoad = true;
+
+function avatar(el, handle, wallet) {
+  el.textContent = initials(handle);
+  el.style.background = colorOf[wallet] || "#9aa0c8";
+}
+
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+function render(s) {
+  colorOf = {};
+  (s.lineup || []).forEach((t, i) => colorOf[t.wallet] = COLORS[i % COLORS.length]);
+  $("simBanner").hidden = s.mode !== "demo";
+  $("killBanner").hidden = !s.killed;
+  $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + ". Copies are being sold; copying is stopped until ./fomo.sh reset.";
+  $("stopBanner").hidden = !s.dailyStop;
+  $("copied").textContent = s.tradesCopied;
+  const chip = $("modeChip");
+  chip.className = "chip " + (s.killed ? "off" : s.mode === "live" ? "" : s.mode);
+  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase();
+  $("bal").textContent = money(s.balance);
+  $("start").textContent = money(s.start);
+  $("pnl").textContent = signed(s.pnl);
+  $("pnl").className = "big num " + (s.pnl >= 0 ? "good" : "bad");
+  $("pnlTile").classList.toggle("neg", s.pnl < 0);
+  $("pnlPct").textContent = (s.pnlPct >= 0 ? "+" : "") + s.pnlPct.toFixed(1) + "%";
+  $("mult").textContent = "x" + s.multiple.toFixed(s.multiple >= 10 ? 1 : 2);
+
+  const f = s.following;
+  if (f) {
+    avatar($("curAv"), f.handle, f.wallet);
+    $("curHandle").textContent = "@" + f.handle;
+    $("curSub").textContent = `#${f.rank} weekly` + (f.pnl7d != null ? ` · ${big(f.pnl7d)} 7d` : "") + (f.winRate != null ? ` · ${Math.round(f.winRate * 100)}% WR` : "") + ` · copy ${f.copyRatio}x`;
+    $("withHim").textContent = signed(f.withHim);
+    $("withHim").className = "num " + (f.withHim >= 0 ? "good" : "bad");
+  } else {
+    $("curAv").textContent = "–"; $("curAv").style.background = "#3a3f66";
+    $("curHandle").textContent = "nobody";
+    $("curSub").textContent = s.lineup && s.lineup.length ? "every trader on the weekly top is fired" : "waiting for the weekly top";
+    $("withHim").textContent = "$0.00";
+  }
+  const l6 = $("last6"); l6.replaceChildren();
+  const res = f ? f.last6 : [];
+  for (let i = 0; i < 6; i++) l6.append(el("div", "sq " + (res[i] || "")));
+
+  const n = s.fireRule.after;
+  $("ruleN").textContent = n;
+  const lb = $("lboxes"); lb.replaceChildren();
+  for (let i = 0; i < n; i++) lb.append(el("div", "lbox" + (i < s.fireRule.streak ? " on" : ""), i < s.fireRule.streak ? "L" : "–"));
+  $("streak").textContent = `${s.fireRule.streak}/${n}`;
+  $("fired").textContent = s.fireRule.firedSoFar;
+  const span = s.equity.length ? s.equity[s.equity.length - 1][0] - s.equity[0][0] : 0;
+  const clock = hhmm(s.now) + " · " + (span / 3600).toFixed(1) + "h";
+  $("clock").textContent = clock; $("clock2").textContent = clock;
+  $("wsState").textContent = s.mode === "demo" ? "simulated" : s.wsConnected ? "live stream" : "polling";
+
+  drawChart(s);
+
+  const feed = $("feed"); feed.replaceChildren();
+  for (const e of s.feed) {
+    const li = el("li");
+    li.append(el("span", "tag " + e.kind, `[${e.kind}]`), el("span", "txt", e.text));
+    const p = el("span", "num " + (e.pnl == null ? "" : e.pnl >= 0 ? "good" : "bad"), e.pnl == null ? "" : signed(e.pnl));
+    li.append(p);
+    li.title = new Date(e.t * 1000).toLocaleString();
+    feed.append(li);
+  }
+
+  const bar = $("stintbar"); bar.replaceChildren();
+  const stints = s.stints || [];
+  const t0 = stints.length ? stints[0].start : 0, t1 = s.now;
+  for (const st of stints) {
+    const w = Math.max(((st.end || t1) - st.start) / Math.max(t1 - t0, 1), 0.04);
+    const d = el("div", null, `@${st.handle} ${signed(st.pnl).replace(".00", "")}`);
+    d.style.flex = w; d.style.background = colorOf[st.wallet] || "#9aa0c8";
+    if (st.fired) d.style.opacity = .75;
+    bar.append(d);
+  }
+
+  const cards = $("cards"); cards.replaceChildren();
+  for (const t of s.lineup) {
+    const c = el("div", "card " + t.status);
+    const top = el("div", "top");
+    top.append(el("span", null, "#" + t.rank), el("span", "st " + t.status, t.status.toUpperCase()));
+    const av = el("div", "avatar"); avatar(av, t.handle, t.wallet);
+    c.append(top, av, el("div", "h", "@" + t.handle));
+    c.append(el("div", "s", [t.pnl7d != null ? big(t.pnl7d) + " 7d" : null, t.winRate != null ? Math.round(t.winRate * 100) + "% WR" : null].filter(Boolean).join(" · ") || " "));
+    const us = el("div", "us num " + (t.trades ? (t.us >= 0 ? "good" : "bad") : "muted"), t.trades ? "us: " + signed(t.us) : "not copied");
+    c.append(us);
+    cards.append(c);
+  }
+
+  const tb = $("pos"); tb.replaceChildren();
+  if (!s.positions.length) { const tr = el("tr"); const td = el("td", "muted", "none"); td.colSpan = 6; tr.append(td); tb.append(tr); }
+  for (const p of s.positions) {
+    const tr = el("tr");
+    tr.append(el("td", null, "$" + p.symbol), el("td", null, "@" + p.handle), el("td", "r num", money(p.cost)), el("td", "r num", money(p.value)),
+              el("td", "r num " + (p.pnlPct >= 0 ? "good" : "bad"), (p.pnlPct >= 0 ? "+" : "") + p.pnlPct + "%"), el("td", "r num", p.ageMin + "m"));
+    tb.append(tr);
+  }
+  const L = s.limits;
+  $("limits").textContent = `Limits: max $${L.maxTrade} per copy · ${L.maxOpen} open at most · stop loss ${L.stopLoss == null ? "off" : "-" + L.stopLoss + "%"} · kill switch at -${Math.round(L.maxDrawdown * 100)}% from the high`;
+
+  // the fired moment: show it once per new firing
+  const fires = s.feed.filter(e => e.kind === "FIRE");
+  const newest = fires.length ? fires[0].t + fires[0].text : null;
+  if (!firstLoad && newest && newest !== lastFireSeen) showFired(s);
+  lastFireSeen = newest; firstLoad = false;
+}
+
+function showFired(s) {
+  const done = s.stints.filter(x => x.fired);
+  const out = done[done.length - 1];
+  if (!out) return;
+  const outT = s.lineup.find(t => t.wallet === out.wallet) || {handle: out.handle, wallet: out.wallet};
+  avatar($("oAv"), outT.handle, outT.wallet);
+  $("oH").textContent = "@" + outT.handle;
+  $("oSub").textContent = outT.rank ? `#${outT.rank} weekly` + (outT.winRate != null ? ` · ${Math.round(outT.winRate * 100)}% WR` : "") : "";
+  $("oLast").textContent = `last ${s.fireRule.after} copies: losses`;
+  $("oRun").textContent = `their run: ${outT.trades || "?"} copies · ${signed(out.pnl)}`;
+  const f = s.following;
+  if (f) {
+    avatar($("nAv"), f.handle, f.wallet);
+    $("nH").textContent = "@" + f.handle;
+    $("nSub").textContent = `#${f.rank} weekly` + (f.winRate != null ? ` · ${Math.round(f.winRate * 100)}% WR` : "");
+    $("nRule").textContent = `copy size ${f.copyRatio}x · exits when they sell`;
+    $("nRule2").textContent = `rule: ${s.fireRule.after} losses in a row → next`;
+  } else {
+    $("nAv").textContent = "–"; $("nH").textContent = "nobody"; $("nSub").textContent = "every trader is fired";
+    $("nRule").textContent = ""; $("nRule2").textContent = "";
+  }
+  $("overlay").hidden = false;
+  setTimeout(() => $("overlay").hidden = true, 4000);
+}
+
+function drawChart(s) {
+  const box = $("chart");
+  const W = box.clientWidth || 600, H = box.clientHeight || 300, P = {l: 8, r: 70, t: 26, b: 18};
+  const pts = s.equity;
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H); svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Balance over time; dashed lines mark when a trader was fired");
+  box.replaceChildren(svg);
+  if (pts.length < 2) {
+    const t = document.createElementNS(NS, "text"); t.setAttribute("x", 12); t.setAttribute("y", H / 2); t.setAttribute("fill", "#7c80a3"); t.textContent = "waiting for the first balance reading…";
+    svg.append(t); return;
+  }
+  const t0 = pts[0][0], t1 = Math.max(pts[pts.length - 1][0], t0 + 1);
+  let lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1]));
+  if (hi - lo < 1e-6) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.1; lo -= pad; hi += pad;
+  const x = t => P.l + (t - t0) / (t1 - t0) * (W - P.l - P.r);
+  const y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
+  const add = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text) e.textContent = text; svg.append(e); return e; };
+  const defs = add("defs", {});
+  let labelEnd = -Infinity;
+  const stints = s.stints.length ? s.stints : [{start: t0, end: null, wallet: "", handle: "", fired: false}];
+  stints.forEach((st, i) => {
+    const c = colorOf[st.wallet] || "#9aa0c8";
+    const g = document.createElementNS(NS, "linearGradient"); g.id = "g" + i; g.setAttribute("x1", 0); g.setAttribute("y1", 0); g.setAttribute("x2", 0); g.setAttribute("y2", 1);
+    g.innerHTML = `<stop offset="0" stop-color="${c}" stop-opacity=".28"/><stop offset="1" stop-color="${c}" stop-opacity="0"/>`;
+    defs.append(g);
+    const a = i === 0 ? t0 : st.start, b = st.end || t1;
+    const seg = pts.filter(p => p[0] >= a && p[0] <= b);
+    const before = pts.filter(p => p[0] < a).pop();
+    if (before) seg.unshift(before);
+    if (seg.length < 2) return;
+    const line = seg.map((p, j) => (j ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(p[1]).toFixed(1)).join(" ");
+    add("path", {d: line + ` L${x(seg[seg.length - 1][0]).toFixed(1)} ${H - P.b} L${x(seg[0][0]).toFixed(1)} ${H - P.b} Z`, fill: `url(#g${i})`});
+    add("path", {d: line, fill: "none", stroke: c, "stroke-width": 2, "stroke-linejoin": "round"});
+    const name = st.handle ? "@" + st.handle : "";
+    const lx = Math.min(Math.max(x(Math.max(a, t0)) + 6, labelEnd + 10), W - P.r - 60);
+    labelEnd = lx + 14 + name.length * 6.6;
+    add("circle", {cx: lx + 4, cy: 12, r: 4, fill: c});
+    add("text", {x: lx + 12, y: 16, fill: "#b4b8d6", "font-size": 10.5}, name);
+    if (i > 0) {
+      add("line", {x1: x(a), x2: x(a), y1: P.t - 4, y2: H - P.b, stroke: "#ff5f6d", "stroke-dasharray": "4 4", "stroke-opacity": .7});
+      const v = (pts.find(p => p[0] >= a) || pts[pts.length - 1])[1];
+      add("circle", {cx: x(a), cy: y(v), r: 4.5, fill: "#ff5f6d"});
+      add("text", {x: x(a) + 6, y: y(v) + 14, fill: "#ff5f6d", "font-size": 10, "font-weight": 600}, "FIRED");
+    }
+  });
+  const last = pts[pts.length - 1];
+  add("circle", {cx: x(last[0]), cy: y(last[1]), r: 5, fill: "#3ddc97"});
+  add("circle", {cx: x(last[0]), cy: y(last[1]), r: 10, fill: "#3ddc97", opacity: .18});
+  const label = money(last[1]);
+  const lw = label.length * 7.6 + 14, lx = Math.min(x(last[0]) - lw / 2, W - lw - 2), ly = Math.max(y(last[1]) - 30, 2);
+  add("rect", {x: lx, y: ly, width: lw, height: 22, rx: 6, fill: "#0f2a22", stroke: "#3ddc97"});
+  add("text", {x: lx + 7, y: ly + 15, fill: "#3ddc97", "font-size": 12.5, "font-weight": 600}, label);
+  add("text", {x: W - P.r + 10, y: H - P.b, fill: "#7c80a3", "font-size": 10}, money(lo + pad).replace(".00", ""));
+}
+
+$("killBtn").addEventListener("click", async () => {
+  if (!confirm("Fire the kill switch? The bot sells every copy and stops copying until you run ./fomo.sh reset.")) return;
+  try { await fetch("/api/kill", {method: "POST", headers: {"x-phantom": "1"}}); } catch (e) { alert("Could not reach the bot."); }
+});
+
+const SAMPLE = (() => {
+  const now = Math.floor(Date.now() / 1000), w = ["A", "B", "C", "D", "E", "F"].map(c => c.repeat(32));
+  const eq = []; let v = 100;
+  for (let i = 0; i <= 120; i++) { v *= 1 + Math.sin(i / 9) * 0.004 + (i > 60 ? 0.002 : -0.001); eq.push([now - (120 - i) * 300, +v.toFixed(2)]); }
+  const lineup = ["sample_one", "sample_two", "sample_three", "sample_four", "sample_five", "sample_six"].map((h, i) => ({rank: i + 1, handle: h, wallet: w[i], pnl7d: 40000 / (i + 1), winRate: .7 - i * .02, status: i === 0 ? "fired" : i === 1 ? "following" : "bench", us: i === 0 ? -3.1 : i === 1 ? 9.4 : 0, trades: i < 2 ? 7 : 0}));
+  return {mode: "sample", now, killed: false, killReason: "", wsConnected: true, balance: v, start: 100, pnl: v - 100, pnlPct: (v - 100), multiple: v / 100, tradesCopied: 14,
+    following: {handle: "sample_two", wallet: w[1], rank: 2, pnl7d: 20000, winRate: .68, copyRatio: .25, last6: ["W", "L", "W", "W"], withHim: 9.4},
+    fireRule: {after: 2, streak: 0, firedSoFar: 1}, equity: eq,
+    stints: [{wallet: w[0], handle: "sample_one", start: eq[0][0], end: eq[60][0], pnl: -3.1, fired: true}, {wallet: w[1], handle: "sample_two", start: eq[60][0], end: null, pnl: 9.4, fired: false}],
+    lineup, positions: [{symbol: "SAMPLE", mint: "x", handle: "sample_two", cost: 6.2, value: 7.1, pnlPct: 14.5, ageMin: 23}],
+    feed: [{t: now, kind: "EXIT", text: "@sample_two $SAMPLE · trader sold · we exit", pnl: 1.2}, {t: now - 60, kind: "COPY", text: "@sample_two bought $SAMPLE · copy 0.25x · $6.20", pnl: null}, {t: now - 900, kind: "FIRE", text: "@sample_one 2 L in a row → fired", pnl: null}],
+    dailyStop: false, limits: {maxTrade: 20, maxOpen: 5, stopLoss: 50, maxDrawdown: .4}};
+})();
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    $("sampleBanner").hidden = true;
+    render(await r.json());
+  } catch (e) {
+    $("sampleBanner").hidden = false;
+    render(SAMPLE);
+  }
+}
+tick();
+setInterval(tick, 1000);
+window.addEventListener("resize", tick);
+</script>
+</body>
+</html>

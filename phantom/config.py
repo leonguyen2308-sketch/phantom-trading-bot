@@ -36,7 +36,8 @@ def load_env(path: str | Path = ".env") -> None:
         os.environ.setdefault(k, v)
 
 
-SECRET_ENV_KEYS = ("TYPESAFE_API_KEY", "JUPITER_API_KEY", "PHANTOM_BOT_PRIVATE_KEY", "TELEGRAM_BOT_TOKEN", "SOLANA_RPC_URL")
+SECRET_ENV_KEYS = ("TYPESAFE_API_KEY", "JUPITER_API_KEY", "PHANTOM_BOT_PRIVATE_KEY", "TELEGRAM_BOT_TOKEN", "SOLANA_RPC_URL",
+                   "FOMO_BOT_PRIVATE_KEY", "FOMOAPI_KEY", "SOLANA_WS_URL")
 
 
 class _Redact(logging.Filter):

@@ -120,6 +120,39 @@ def impact_bps(order: dict) -> float:
     return 1e9
 
 
+def submit_order(http: httpx.Client, base: str, headers: dict, kp: Keypair, order: dict,
+                 poll_seconds: float = POLL_SECONDS, sleep=time.sleep) -> dict:
+    """Sign an inspected /order transaction, send it to /execute, and poll until it is known to have landed.
+
+    Returns Jupiter's success response. Raises RuntimeError when it certainly failed (nothing changed on-chain)
+    and SwapOutcomeUnknown when it may or may not have landed.
+    """
+    body = {"signedTransaction": sign_order_transaction(order["transaction"], kp), "requestId": order["requestId"]}
+    deadline = time.monotonic() + poll_seconds
+    last = "no response"
+    while True:
+        try:
+            r = http.post(f"{base}/execute", json=body, headers=headers)
+            if r.status_code < 500:
+                r.raise_for_status()  # a 4xx means the request was refused: nothing was sent on-chain
+            res = r.json() if r.content else {}
+            status = str(res.get("status", "")).lower()
+            if status == "success":
+                return res
+            code = res.get("code")
+            if r.status_code < 500 and status == "failed" and code not in UNKNOWN_CODES:
+                raise RuntimeError(f"Swap failed: {res.get('error') or status} (code {code})")
+            last = f"{res.get('error') or status or r.status_code} (code {code})"
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"Swap refused: HTTP {e.response.status_code}") from None
+        except (httpx.TransportError, ValueError) as e:  # timeout, dropped connection, bad JSON: outcome unknown
+            last = type(e).__name__
+        if time.monotonic() > deadline:
+            raise SwapOutcomeUnknown(f"swap outcome unknown after {poll_seconds:.0f}s (last: {last})")
+        log.warning("Swap not confirmed yet (%s); polling again", last)
+        sleep(5)
+
+
 class JupiterBroker:
     mode = "live"
 
@@ -198,31 +231,7 @@ class JupiterBroker:
         return Fill("sell", qty, usd / qty, usd, sig)
 
     def execute(self, p: Prepared) -> Fill:
-        o = p.payload
-        body = {"signedTransaction": sign_order_transaction(o["transaction"], self.kp), "requestId": o["requestId"]}
-        deadline = time.monotonic() + self.poll_seconds
-        last = "no response"
-        while True:
-            try:
-                r = self.http.post(f"{self.base}/execute", json=body, headers=self.headers)
-                if r.status_code < 500:
-                    r.raise_for_status()  # a 4xx means the request was refused: nothing was sent on-chain
-                res = r.json() if r.content else {}
-                status = str(res.get("status", "")).lower()
-                if status == "success":
-                    return self._fill(p, res)
-                code = res.get("code")
-                if r.status_code < 500 and status == "failed" and code not in UNKNOWN_CODES:
-                    raise RuntimeError(f"Swap failed: {res.get('error') or status} (code {code})")
-                last = f"{res.get('error') or status or r.status_code} (code {code})"
-            except httpx.HTTPStatusError as e:
-                raise RuntimeError(f"Swap refused: HTTP {e.response.status_code}") from None
-            except (httpx.TransportError, ValueError) as e:  # timeout, dropped connection, bad JSON: outcome unknown
-                last = type(e).__name__
-            if time.monotonic() > deadline:
-                raise SwapOutcomeUnknown(f"swap outcome unknown after {self.poll_seconds:.0f}s (last: {last})")
-            log.warning("Swap not confirmed yet (%s); polling again", last)
-            self.sleep(5)
+        return self._fill(p, submit_order(self.http, self.base, self.headers, self.kp, p.payload, self.poll_seconds, self.sleep))
 
 
 def is_valid_address(s: str) -> bool:

@@ -13,7 +13,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 DASHBOARD = Path(__file__).resolve().parent.parent / "dashboard" / "index.html"
 
 
-def make_app(get_state: Callable[[], dict], kill: Callable[[str], None], lock: threading.Lock | None = None) -> FastAPI:
+def make_app(get_state: Callable[[], dict], kill: Callable[[str], None], lock: threading.Lock | None = None,
+             page: Path = DASHBOARD) -> FastAPI:
     """`lock` is shared with the trading loop so the page never reads half-written state."""
     app = FastAPI(title="Phantom", docs_url=None, redoc_url=None, openapi_url=None)
     lock = lock or threading.Lock()
@@ -33,7 +34,7 @@ def make_app(get_state: Callable[[], dict], kill: Callable[[str], None], lock: t
 
     @app.get("/")
     def index():
-        return FileResponse(DASHBOARD)
+        return FileResponse(page)
 
     @app.get("/api/state")
     def state():

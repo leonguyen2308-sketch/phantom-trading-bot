@@ -1,5 +1,10 @@
 # Phantom trading bot
 
+> **New: FOMO copy bot** (`./fomo.sh`). Copies the FOMO weekly top trader at 0.25x, exits when they sell,
+> fires them after 2 losses in a row, like the copyfomo video. Guide in Vietnamese: [`FOMO_BOT.md`](FOMO_BOT.md).
+> Try it with no keys: `./fomo.sh demo`, then open http://localhost:8001.
+
+
 Trades BTC automatically from a dedicated Phantom (Solana) wallet. **It starts in paper mode and
 refuses real money until every go-live check passes.**
 
@@ -102,6 +107,10 @@ phantom/bot.py          the trading loop
 phantom/execution/      paper broker and Jupiter (Solana) broker
 phantom/golive.py       the final check
 dashboard/index.html    the dashboard (sample data when opened on its own)
+
+fomo/                   the FOMO copy bot (see FOMO_BOT.md)
+dashboard/fomo.html     its dashboard
+config/fomo.yaml        its rules and hard limits; config/traders.yaml: the weekly top
 ```
 
 Run the tests with `uv run --group dev pytest`.

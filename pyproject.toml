@@ -10,6 +10,7 @@ dependencies = [
   "fastapi>=0.110",
   "uvicorn>=0.29",
   "typesafe-sdk>=0.7.2",
+  "websockets>=13",
 ]
 
 [dependency-groups]
