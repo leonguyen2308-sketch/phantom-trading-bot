@@ -117,7 +117,7 @@ scripts/install-fomo-service.sh paper
 Chỉ chạy khi paper trading đã ổn. Các bước:
 
 1. Trong Phantom, **tạo ví MỚI** chỉ dùng cho bot này. **Không bao giờ** dùng ví chính.
-2. Gửi vào ví đó **USDC (mạng Solana)**, chỉ số tiền bạn chấp nhận mất hết, và khoảng **0,05 SOL** để trả phí mạng.
+2. Gửi vào ví đó **USDC (mạng Solana)**, chỉ số tiền bạn chấp nhận mất hết, và khoảng **0,1 SOL**. Mỗi coin mới mua giữ lại khoảng 0,002 SOL tiền "rent" cho tài khoản token; còn dưới 0,03 SOL thì bot ngừng copy.
 3. Phantom → Settings → chọn ví bot → **Show Private Key**. Dán vào `.env` ở `FOMO_BOT_PRIVATE_KEY`, và địa chỉ ví vào `FOMO_BOT_ADDRESS`. Không dán key này ở bất kỳ chỗ nào khác.
 4. Chạy lần lượt:
 

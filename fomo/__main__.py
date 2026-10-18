@@ -206,8 +206,9 @@ def cmd_wallet_check() -> None:
     b = LiveBroker(kp, os.environ["JUPITER_API_KEY"], SolanaRpc(os.environ["SOLANA_RPC_URL"]))
     usdc, sol = b.usdc(), b.sol()
     print(f"Bot wallet {kp.pubkey()}\n  USDC {usdc:,.2f}\n  SOL  {sol:.4f}")
-    if sol < cfg.limits.min_sol_for_fees:
-        print(f"  ! Send at least {cfg.limits.min_sol_for_fees} SOL for network fees and token accounts.")
+    if sol < 0.1:
+        print("  ! Keep about 0.1 SOL here: every new coin locks ~0.002 SOL in a token account, and below "
+              f"{cfg.limits.min_sol_for_fees} SOL the bot stops copying.")
     if usdc < cfg.copy.min_trade_usd:
         print("  ! Send USDC (Solana) to this wallet: the bot buys with USDC.")
     q = b.quote_buy(WSOL, 5.0)
