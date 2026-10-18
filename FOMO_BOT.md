@@ -11,6 +11,8 @@ Bot này làm đúng những gì video quảng cáo:
 Ngoài luật trong video, bot có thêm những thứ video không nói tới nhưng **bắt buộc phải có** khi đánh memecoin: kiểm tra rug/honeypot trước khi mua, stop loss, giới hạn mỗi lệnh, kill switch.
 
 > **Đọc phần "Sự thật về video" ở dưới trước khi bỏ tiền thật.**
+>
+> **Mới dùng lần đầu? Làm theo [`HUONG_DAN.md`](HUONG_DAN.md): từng bước từ A đến Z để chạy live 24/24 trên MacBook.**
 
 ---
 
@@ -29,13 +31,20 @@ Bot này làm đúng như video, nhưng **không thể** biến chiến lược 
 
 ## Cài đặt trên MacBook
 
-Mở **Terminal** (Cmd+Space, gõ "Terminal") rồi chạy từng dòng:
+Mở **Terminal** (Cmd+Space, gõ "Terminal"). Cài uv (chỉ 1 lần), xong thì **đóng hẳn Terminal (Cmd+Q) và mở lại**:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh     # chỉ chạy 1 lần; xong thì mở cửa sổ Terminal mới
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Rồi tải bot:
+
+```bash
 git clone -b claude/determined-goldberg-r7aoiv https://github.com/leonguyen2308-sketch/phantom-trading-bot
 cd phantom-trading-bot
 ```
+
+(Các lệnh trong tài liệu này không kèm ghi chú `# ...`: Terminal của Mac (zsh) không bỏ qua ghi chú mà đưa luôn vào lệnh, làm lệnh lỗi.)
 
 ### Bước 1: Xem demo (không cần key, không cần tiền)
 
@@ -119,21 +128,22 @@ Chỉ chạy khi paper trading đã ổn. Các bước:
 1. Trong Phantom, **tạo ví MỚI** chỉ dùng cho bot này. **Không bao giờ** dùng ví chính.
 2. Gửi vào ví đó **USDC (mạng Solana)**, chỉ số tiền bạn chấp nhận mất hết, và khoảng **0,1 SOL**. Mỗi coin mới mua giữ lại khoảng 0,002 SOL tiền "rent" cho tài khoản token; còn dưới 0,03 SOL thì bot ngừng copy.
 3. Phantom → Settings → chọn ví bot → **Show Private Key**. Dán vào `.env` ở `FOMO_BOT_PRIVATE_KEY`, và địa chỉ ví vào `FOMO_BOT_ADDRESS`. Không dán key này ở bất kỳ chỗ nào khác.
-4. Chạy lần lượt:
+4. Chạy lần lượt: `./fomo.sh wallet-check` (xem số dư và thử báo giá, không gửi gì cả), `./fomo.sh approve` (gõ APPROVE), `./fomo.sh ack-risks` (gõ I ACCEPT), `./fomo.sh golive-check` (mọi dòng phải PASS):
 
 ```bash
-./fomo.sh wallet-check    # xem số dư và thử báo giá, không gửi gì cả
-./fomo.sh approve         # xem lại và khoá config/fomo.yaml (gõ APPROVE)
-./fomo.sh ack-risks       # đọc từng rủi ro (gõ I ACCEPT)
-./fomo.sh golive-check    # mọi dòng phải PASS
+./fomo.sh wallet-check
+./fomo.sh approve
+./fomo.sh ack-risks
+./fomo.sh golive-check
 ```
 
-5. Trong `.env` sửa thành `FOMO_LIVE=yes`, rồi chạy:
+5. Trong `.env` sửa thành `FOMO_LIVE=yes`, rồi chạy nền 24/24:
 
 ```bash
-./fomo.sh live
-# hoặc chạy nền:  scripts/install-fomo-service.sh live
+scripts/install-fomo-service.sh live
 ```
+
+(Hoặc chạy trong cửa sổ Terminal đang mở bằng `./fomo.sh live`.)
 
 `golive-check` yêu cầu đã paper ít nhất 24 giờ và có ít nhất 5 lệnh copy. Mục đích là chứng minh máy bạn thực sự bắt được lệnh của trader và Jupiter khớp được lệnh, trước khi dùng tiền thật.
 
@@ -206,18 +216,18 @@ Nguồn:
 
 ## Các lệnh
 
-```
-./fomo.sh demo            mô phỏng + dashboard, không cần key
-./fomo.sh traders         xem top tuần, kiểm tra bot có thấy lệnh của từng trader không
-./fomo.sh research        chạy lại luật copy trên giao dịch thật 7 ngày qua
-./fomo.sh paper           copy thật, tiền giả
-./fomo.sh wallet-check    kiểm tra ví bot (không gửi gì)
-./fomo.sh approve         khoá config/fomo.yaml
-./fomo.sh ack-risks       đọc và chấp nhận rủi ro
-./fomo.sh golive-check    kiểm tra trước khi chạy tiền thật
-./fomo.sh live            tiền thật
-./fomo.sh kill            bán hết, ngừng copy
-./fomo.sh reset           bật lại sau kill switch
-```
+| Lệnh | Làm gì |
+|---|---|
+| `./fomo.sh demo` | mô phỏng + dashboard, không cần key |
+| `./fomo.sh traders` | xem top tuần, kiểm tra bot có thấy lệnh của từng trader không |
+| `./fomo.sh research` | chạy lại luật copy trên giao dịch thật 7 ngày qua |
+| `./fomo.sh paper` | copy thật, tiền giả |
+| `./fomo.sh wallet-check` | kiểm tra ví bot (không gửi gì) |
+| `./fomo.sh approve` | khoá `config/fomo.yaml` |
+| `./fomo.sh ack-risks` | đọc và chấp nhận rủi ro |
+| `./fomo.sh golive-check` | kiểm tra trước khi chạy tiền thật |
+| `./fomo.sh live` | tiền thật |
+| `./fomo.sh kill` | bán hết, ngừng copy |
+| `./fomo.sh reset` | bật lại sau kill switch |
 
 Code nằm trong `fomo/`, test nằm trong `tests/test_fomo_*.py` (chạy bằng `uv run --group dev pytest`).

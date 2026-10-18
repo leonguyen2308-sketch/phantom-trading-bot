@@ -276,3 +276,23 @@ def test_a_short_rpc_outage_does_not_fire_the_kill_switch(world):
     for _ in range(200):  # minutes of errors: now it fires
         run(bot, w, clock)
     assert bot.kill.tripped
+
+
+def test_reset_from_the_command_line_clears_the_running_bots_error_streak(world):
+    bot, m, w, clock = world
+
+    def down():
+        raise RuntimeError("rpc down")
+    w.poll = down
+    for _ in range(200):
+        run(bot, w, clock)
+    assert bot.kill.tripped
+    bot.kill.reset("RESET")  # what ./fomo.sh reset does
+    bot.journal.put("api_errors:paper", 0)
+    bot.journal.put("peak:paper", None)
+    w.poll = lambda: []
+    run(bot, w, clock, advance=20)
+    assert bot.api_errors == 0
+    w.poll = down
+    run(bot, w, clock, advance=20)
+    assert not bot.kill.tripped

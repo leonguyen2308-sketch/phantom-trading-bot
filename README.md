@@ -1,7 +1,8 @@
 # Phantom trading bot
 
 > **New: FOMO copy bot** (`./fomo.sh`). Copies the FOMO weekly top trader at 0.25x, exits when they sell,
-> fires them after 2 losses in a row, like the copyfomo video. Guide in Vietnamese: [`FOMO_BOT.md`](FOMO_BOT.md).
+> fires them after 2 losses in a row, like the copyfomo video. Guides in Vietnamese: [`HUONG_DAN.md`](HUONG_DAN.md)
+> (step by step, A to Z) and [`FOMO_BOT.md`](FOMO_BOT.md).
 > Try it with no keys: `./fomo.sh demo`, then open http://localhost:8001.
 
 
@@ -17,25 +18,35 @@ The strategy is in [`strategy.md`](strategy.md). It is **not validated yet**.
 
 ## 1. Set up (MacBook)
 
+Install uv once, then open a new Terminal window:
+
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh     # once; then open a new Terminal window
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Then get the bot. The first `./run.sh` creates `.env` and stops; add `TYPESAFE_API_KEY` (and Telegram if you
+want alerts), then `jev-test` makes one real Jev call to check the key:
+
+```bash
 git clone -b claude/chat-session-6gnbjh https://github.com/leonguyen2308-sketch/phantom-trading-bot
 cd phantom-trading-bot
-./run.sh                                            # creates .env and stops
-open -e .env                                        # add TYPESAFE_API_KEY (+ Telegram if you want alerts)
-./run.sh jev-test                                   # one real Jev call to check the key
+./run.sh
+open -e .env
+./run.sh jev-test
 ```
+
+(Commands are kept free of `# notes`: the Mac's Terminal (zsh) passes them to the command instead of ignoring them.)
 
 ## 2. Backtest, then paper trade
 
-```bash
-./run.sh backtest                 # rules only, 2 years, graded against the gate
-./run.sh backtest --jev           # with Jev (answers cached in state/)
-./run.sh test-kill                # fire the kill switch through every trigger, on paper
-./run.sh approve-limits           # review and lock config/risk.yaml
-./run.sh                          # paper trading + dashboard at http://localhost:8000
-scripts/install-mac-service.sh    # keep it running: starts at login, restarts on crash
-```
+| Command | What it does |
+|---|---|
+| `./run.sh backtest` | rules only, 2 years, graded against the gate |
+| `./run.sh backtest --jev` | with Jev (answers cached in `state/`) |
+| `./run.sh test-kill` | fire the kill switch through every trigger, on paper |
+| `./run.sh approve-limits` | review and lock `config/risk.yaml` |
+| `./run.sh` | paper trading + dashboard at http://localhost:8000 |
+| `scripts/install-mac-service.sh` | keep it running: starts at login, restarts on crash |
 
 Before trusting Jev in a backtest, set `jev_training_cutoff` in `config/strategy.yaml`. Only data
 after that date counts as out of sample. The last 90 days stay locked until you run

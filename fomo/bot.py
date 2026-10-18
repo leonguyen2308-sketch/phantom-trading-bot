@@ -375,6 +375,8 @@ class CopyBot:
             for c in self.journal.open_copies(self.mode):
                 self.sell(c, 1.0, "kill switch")
             return
+        if self.api_errors and not self.journal.get(f"api_errors:{self.mode}"):
+            self.errors = {k: 0 for k in self.errors}  # ./fomo.sh reset cleared the streak: start counting afresh
         if peak > 0 and (peak - eq) / peak >= lim.max_drawdown_pct:
             return self.trip(f"equity fell {(peak - eq) / peak:.0%} from its high (limit {lim.max_drawdown_pct:.0%})")
         if day_start > 0 and (day_start - eq) / day_start >= lim.daily_loss_limit_pct and self.journal.get(f"daily_stop:{self.mode}") != day:
