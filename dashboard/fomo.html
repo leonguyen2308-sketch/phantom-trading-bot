@@ -278,7 +278,9 @@ function render(s) {
   (s.lineup || []).forEach((t, i) => colorOf[t.wallet] = COLORS[i % COLORS.length]);
   $("simBanner").hidden = s.mode !== "demo";
   $("killBanner").hidden = !s.killed;
-  $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + ". Copies are being sold; copying is stopped until ./fomo.sh reset.";
+  $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + (s.mode === "demo"
+    ? ". Copying is stopped. To start the demo again: Control+C in Terminal, then ./fomo.sh demo."
+    : ". Copies are being sold; copying is stopped until ./fomo.sh reset.");
   $("stopBanner").hidden = !s.dailyStop;
   $("copied").textContent = s.tradesCopied;
   const chip = $("modeChip");
