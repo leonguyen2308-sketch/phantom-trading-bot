@@ -254,8 +254,10 @@ Xem kết quả bất cứ lúc nào:
 - `expectancy_pct`: lãi hoặc lỗ trung bình mỗi lệnh, tính theo % số tiền bỏ vào.
 - `ci95_pct`: khoảng tin cậy 95%. Nếu khoảng này chứa số 0, **chưa chứng minh được là có lãi**.
 - So dòng `desk (real trades)` với `rules-only (shadow)`:
-  - Nếu shadow tốt bằng hoặc hơn, Claude **không giúp gì**. Bạn có thể đặt `enabled: false` trong mục `desk:` của `config/desk.yaml` và `when_unavailable: rules_only` để tiết kiệm tiền API.
-  - Hoặc dừng hẳn.
+  - Nếu shadow tốt hơn, Claude **không giúp gì** và bot sẽ không cho bật live. Bạn có hai lựa chọn:
+    - Tắt Claude: trong mục `desk:` của `config/desk.yaml`, đặt `enabled: false` và `when_unavailable: rules_only`. Bot sẽ chấm điểm bằng sổ shadow (luật thuần) và không tốn tiền API. Nhớ chạy lại `./desk.sh approve`.
+    - Hoặc dừng hẳn.
+- Bot **trừ tiền Claude** vào lãi paper khi chấm điểm. Lãi $6 mà tiền Claude $7 thì vẫn là lỗ.
 - Nếu sau 72 giờ paper vẫn lỗ: **đừng bật live**. Bot sẽ không cho bật đâu.
 
 ## R. Tạo ví riêng cho bot
@@ -313,7 +315,8 @@ Chạy từng lệnh một.
 
 Mọi dòng phải **PASS**, trừ dòng `DESK_LIVE=yes`; dòng đó sẽ PASS sau bước W.
 - Dòng `paper long enough` FAIL: chờ thêm.
-- Dòng `paper made money` FAIL: **dừng ở đây**. Bot lỗ bằng tiền giả thì cũng sẽ lỗ bằng tiền thật.
+- Dòng `paper made money` FAIL: **dừng ở đây**. Bot lỗ bằng tiền giả (đã trừ tiền Claude) thì cũng sẽ lỗ bằng tiền thật.
+- Dòng `desk beats rules-only` FAIL: Claude làm kém hơn luật thuần. Xem bước Q.
 
 ## W. Bật LIVE
 
@@ -338,6 +341,9 @@ scripts/install-desk-service.sh live
 | Thua 5 lệnh liên tiếp | Ngừng mua 12 giờ |
 | Số dư giảm 25% so với đỉnh | **Kill switch**: bán hết, dừng hẳn |
 | Mất mạng hoặc API lỗi liên tục khoảng 2–3 phút | **Kill switch** |
+| Không đọc được RugCheck hoặc danh sách ví lớn | Không mua coin đó, xem lại sau 30 phút. Không biết thì không mua |
+| Coin mất giá trên Jupiter | Lấy giá từ DexScreener, rồi từ báo giá bán. Không nguồn nào có giá trong 2 phút: coi như mất trắng, bán ngay nếu còn bán được |
+| Một coin bán mãi không được | Thử lại mỗi 10 giây, sau 5 phút thì mỗi phút. Coin dưới $5 thì bỏ (ghi lỗ). Không làm bật kill switch |
 | Hết $3 tiền Claude trong ngày | Không mua thêm, chờ sang ngày mới |
 | Giá chạy quá 8% trong lúc hội đồng đang nghĩ | Bỏ lệnh, không đuổi giá |
 
@@ -402,6 +408,8 @@ scripts/install-desk-service.sh live
 | `Desk unavailable` | Sai `ANTHROPIC_API_KEY`, hết credit, hoặc Claude đang quá tải. Không có Claude thì bot **không mua** |
 | `is not approved` | Chạy `./desk.sh approve` |
 | `NOT READY` | Đọc dòng FAIL trong `./desk.sh golive-check` |
+| Dashboard ghi `no price` | Không nguồn nào báo giá coin đó. Sau 2 phút bot coi nó là mất trắng và bán nếu được |
+| Phễu chết hết ở `onchain` với lý do `RugCheck unavailable` | RugCheck đang lỗi. Bot không mua cho đến khi RugCheck chạy lại. Đó là cố ý |
 | Dashboard không mở | `launchctl list \| grep desk`; không thấy dòng nào thì chạy lại bước O hoặc W. Xem lỗi: `tail -50 logs/desk-service.err` |
 
 ---
