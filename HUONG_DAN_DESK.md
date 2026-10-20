@@ -353,7 +353,7 @@ scripts/install-desk-service.sh live
 |---|---|
 | Xem nhanh | Telegram `/status` |
 | Xem chi tiết | **http://localhost:8002** |
-| **Dừng khẩn cấp và bán hết** | Telegram `/kill`, nút KILL SWITCH trên dashboard, hoặc `./desk.sh kill` |
+| **Dừng khẩn cấp và bán hết** | Telegram `/kill`, nút KILL SWITCH trên dashboard, hoặc `./desk.sh kill` (lệnh này dừng cả paper lẫn live) |
 | Mỗi tuần | `./desk.sh stats --mode live`: Claude có còn thắng luật thuần không? |
 | Mỗi tuần | Số SOL trong ví bot dưới 0,05 thì nạp thêm |
 | Mỗi tuần | Xem tiền Claude đã tiêu ở https://platform.claude.com |
@@ -369,7 +369,7 @@ scripts/install-desk-service.sh live
 scripts/install-desk-service.sh live
 ```
 
-**Tắt hẳn bot:**
+**Tắt hẳn bot:** bot sẽ ngừng mua ngay, chờ các lệnh đang gửi dở xong (tối đa 2 phút), rồi mới tắt.
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.phantom.desk.plist
 ```
