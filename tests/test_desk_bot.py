@@ -134,11 +134,13 @@ class Broker:
         if q.side == "buy":
             self.cash -= q.usd
             self.tok[q.mint] = self.tok.get(q.mint, 0) + q.raw
-            return Fill("buy", q.mint, q.raw, q.usd, "b")
+            self.n = getattr(self, "n", 0) + 1
+            return Fill("buy", q.mint, q.raw, q.usd, f"b{self.n}")
         raw = min(q.raw, self.tok.get(q.mint, 0))
         self.cash += q.usd * raw / q.raw
         self.tok[q.mint] -= raw
-        return Fill("sell", q.mint, raw, q.usd * raw / q.raw, "s")
+        self.n = getattr(self, "n", 0) + 1
+        return Fill("sell", q.mint, raw, q.usd * raw / q.raw, f"s{self.n}")
 
 
 class FakeDesk:
@@ -314,7 +316,9 @@ def test_drawdown_fires_the_kill_switch_and_sells(tmp_path):
     d.sweep()
     (p,) = d.journal.open_positions("paper")
     w.price[GOOD] = p["entry_price"] * 0.45  # gaps through the stop: 20% of equity loses 55%
-    tick(d, clock, 15)  # the manager sells at the stop, then the mark sees the drawdown
+    tick(d, clock, 15)  # the manager sells at the stop, then the mark sees the drawdown...
+    assert not d.kill.tripped
+    tick(d, clock, 15)  # ...and the next mark still sees it: two in a row fire the kill switch
     assert d.kill.tripped and d.journal.open_positions("paper") == []
     assert d._buys_blocked()
 
@@ -479,10 +483,10 @@ class LiveBroker(Broker):
             raise SwapOutcomeUnknown("timed out")
         return fill
 
-    def settle(self, mint, side, since):
+    def settle(self, mint, side, since, skip=()):
         if self.chain_down:
             raise RuntimeError("rpc down")
-        return next((f for t, f in self.landed if t >= since - 5 and f.mint == mint and f.side == side), None)
+        return next((f for t, f in self.landed if t >= since - 5 and f.mint == mint and f.side == side and f.ref not in skip), None)
 
 
 def live(tmp_path, cfg=None):
@@ -746,3 +750,64 @@ def test_mint_info_with_an_authority_is_read_again_on_the_next_look(tmp_path):
     w.mint_auth.discard(GOOD)  # the creator revoked it
     assert d._mint_info(GOOD).mint_authority is None
     assert d._mint_info(GOOD) is d._mint_info(GOOD)  # revoked for good: cached
+
+
+def test_a_sell_whose_history_stays_unreadable_is_retried_from_the_wallet_balance(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.sweep()
+    (p,) = d.journal.open_positions("live")
+    w.price[GOOD] = p["entry_price"] * 0.5
+    d.broker.unknown = "lost"
+    d.broker.chain_down = True  # getSignaturesForAddress keeps failing; plain balance reads still work
+    tick(d, clock, 10)
+    assert d.journal.pending("live") and d.journal.open_positions("live")
+    for _ in range(40):
+        tick(d, clock, 10)
+    assert d.journal.pending("live") == [] and d.journal.open_positions("live") == []  # sold from the balance, not stuck
+    assert d.broker.tok.get(GOOD, 0) == 0
+
+
+def test_a_sell_booked_by_a_worker_during_the_wallet_read_skips_that_mark(tmp_path):
+    d, w, clock = make(tmp_path)
+    before = d.journal.equity_curve("paper")
+    real_usdc = d.broker.usdc
+
+    def usdc():
+        d._book_version += 1  # a worker booked an exit meanwhile
+        return real_usdc()
+    d.broker.usdc = usdc
+    clock.t += 15
+    d.mark()
+    assert len(d.journal.equity_curve("paper")) == len(before)
+
+
+def test_a_buy_in_flight_never_raises_the_high_or_the_days_start(tmp_path):
+    d, w, clock = make(tmp_path)
+    d.journal.add_pending("paper", "buy", GOOD, None, 1, 20.0, clock(), {})  # USDC not yet left, coin not yet booked
+    d._executing.add(1)
+    clock.t += 15
+    d.mark()
+    assert d.equity_now == pytest.approx(120.0) and d.journal.get("peak:paper") == pytest.approx(100.0)
+
+
+def test_pricing_trouble_with_a_rules_only_coin_never_fires_the_real_kill_switch(tmp_path):
+    d, w, clock = make(tmp_path, desk=FakeDesk(verdict="block"))
+    only_good(w)
+    d.sweep()
+    assert d.journal.open_positions("paper", "shadow") and not d.journal.open_positions("paper")
+    w.jup_hidden.add(GOOD)
+
+    def down(mints):
+        raise RuntimeError("cloudflare")
+    d.mdex.tokens = down
+    for _ in range(30):
+        tick(d, clock, 16)
+    assert not d.kill.tripped
+
+
+def test_an_old_tripped_kill_switch_survives_the_upgrade(tmp_path):
+    from desk.__main__ import adopt_old_kill
+    KillSwitch(tmp_path / "desk_kill.json").trip("pressed before the upgrade")
+    new = KillSwitch(tmp_path / "desk_live_kill.json")
+    adopt_old_kill(tmp_path, new)
+    assert new.tripped and "before the upgrade" in new.reason

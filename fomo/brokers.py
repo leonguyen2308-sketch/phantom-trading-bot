@@ -71,6 +71,9 @@ def _quote(o: dict, side: str, mint: str) -> Quote:
     return Quote(side, mint, usd, raw, int(o.get("otherAmountThreshold") or 0), impact_bps(o) / 100, o)
 
 
+SETTLE_PAGES = 8
+
+
 def _delta(tx: dict, owner: str, mint: str) -> int:
     """Change in `owner`'s balance of `mint` (base units) made by one jsonParsed transaction."""
     meta = tx.get("meta") or {}
@@ -171,25 +174,33 @@ class LiveBroker:
     def quote_sell(self, mint: str, raw: int) -> Quote:
         return _quote(self._order(mint, USDC, int(raw)), "sell", mint)
 
-    def settle(self, mint: str, side: str, since: float) -> Fill | None:
+    def settle(self, mint: str, side: str, since: float, skip=()) -> Fill | None:
         """What a swap sent at `since` (unix seconds) really did, read from the wallet's own transactions: the fill, or
         None when no transaction since then moved this coin that way. Each transaction is read on its own, so swaps of
-        other coins landing at the same time don't mix in. Raises when the chain can't be read (try again later)."""
-        for s in self.rpc.signatures(self.address, limit=25):  # newest first
-            bt = s.get("blockTime")
-            if bt is not None and bt < since - 5:
-                break
-            if s.get("err") is not None:
-                continue
-            tx = self.rpc.transaction(s["signature"])
-            if not tx:
-                continue
-            d_tok, d_usd = _delta(tx, self.address, mint), _delta(tx, self.address, USDC)
-            if side == "buy" and d_tok > 0 and d_usd < 0:
-                return Fill("buy", mint, d_tok, -d_usd / 1e6, s["signature"])
-            if side == "sell" and d_tok < 0 and d_usd > 0:
-                return Fill("sell", mint, -d_tok, d_usd / 1e6, s["signature"])
-        return None
+        other coins landing at the same time don't mix in; `skip` holds signatures already booked (an earlier
+        take-profit a few seconds before). Pages back until it has seen everything since `since`, and raises when it
+        can't (the chain can't be read, or too much happened): never a 'did not land' it hasn't checked."""
+        before = None
+        for _ in range(SETTLE_PAGES):
+            page = self.rpc.signatures(self.address, limit=25, before=before)  # newest first
+            for s in page:
+                bt = s.get("blockTime")
+                if bt is not None and bt < since - 5:
+                    return None
+                if s.get("err") is not None or s["signature"] in skip:
+                    continue
+                tx = self.rpc.transaction(s["signature"])
+                if not tx:
+                    raise RuntimeError(f"transaction {s['signature'][:8]} not readable yet")
+                d_tok, d_usd = _delta(tx, self.address, mint), _delta(tx, self.address, USDC)
+                if side == "buy" and d_tok > 0 and d_usd < 0:
+                    return Fill("buy", mint, d_tok, -d_usd / 1e6, s["signature"])
+                if side == "sell" and d_tok < 0 and d_usd > 0:
+                    return Fill("sell", mint, -d_tok, d_usd / 1e6, s["signature"])
+            if len(page) < 25:
+                return None
+            before = page[-1]["signature"]
+        raise RuntimeError(f"more than {SETTLE_PAGES * 25} transactions since the swap: can't settle it from history")
 
     def execute(self, q: Quote) -> Fill:
         res = submit_order(self.http, self.base, self.headers, self.kp, q.payload, self.poll_seconds, self.sleep)

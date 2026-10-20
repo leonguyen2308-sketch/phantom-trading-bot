@@ -39,6 +39,7 @@ DUST_USD = 0.5
 WRITE_OFF_AFTER = 30  # failed sells of one position before it is written off (if worth little) or retried slowly
 SLOW_RETRY_SECONDS = 60
 SETTLE_SECONDS = 180  # a swap whose outcome was unknown and that hasn't shown up on chain by now never will
+SETTLE_GIVE_UP_SECONDS = 360  # history still unreadable this long after: settle from the wallet balance instead
 STREAK_TTL_SECONDS = 1800  # error streaks saved more than this long ago are forgotten at start-up
 UNPRICED_SECONDS = 120  # no price from any source for this long: the coin is treated as worth nothing
 SHORT_READS = 3  # wallet reads in a row that must agree before the bot believes tokens left outside it
@@ -90,6 +91,8 @@ class Desk:
         self._no_route_n: dict[int, int] = {}
         self._unpriced_n: dict[str, int] = {}
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sell") if threaded else None
+        self._book_version = 0  # bumped whenever a position is opened or an exit booked (see mark)
+        self._breaches: dict[str, int] = {}  # limit breaches seen in consecutive marks
         self.sell_only: str | None = None  # set when live trading may only sell (go-live checks no longer pass)
         self.draining = False  # shutting down: no new buys
         self._alert_q: queue.Queue = queue.Queue()
@@ -544,10 +547,11 @@ class Desk:
                 if fill is PENDING:
                     self._feed("WARN", "CHIEF", f"${symbol}: buy outcome unknown; settling it from the wallet's transactions", alert=True)
                     return "pending"
-                self.journal.drop_pending(pid)
                 if fill is None or fill.raw <= 0:
+                    self.journal.drop_pending(pid)
                     return "fill-failed"
-                self._open_real(info, mint, fill)
+                self._open_real(info, mint, fill)  # booked first, crossed off second: a crash in between re-settles
+                self.journal.drop_pending(pid)     # (and finds the buy already booked), it never forgets the coin
         finally:
             with self.lock:
                 self._executing.discard(pid)
@@ -559,7 +563,10 @@ class Desk:
         plan, _ = make_plan(fill_price, info["atr"], info["vol5"], self.cfg.plan)
         if plan is None:  # the fill moved the levels so far the plan no longer passes: keep the decided one, re-based
             plan, _ = make_plan(info["decided_price"], info["atr"], info["vol5"], self.cfg.plan)
+        if plan is None:  # the rules changed since the decision: a coin already bought still needs its exits
+            plan, _ = make_plan(fill_price, info["atr"], info["vol5"], self.cfg.plan, strict=False)
         with self.lock:
+            self._book_version += 1
             self.journal.open_position(mode=self.mode, book="real", mint=mint, symbol=info["symbol"], decimals=dec, station=info["station"],
                                        pool=info["pool"], opened_t=int(self.clock()), cost_usd=fill.usd, raw=fill.raw, entry_price=fill_price,
                                        plan=plan.to_dict(), decision_id=info["did"], buy_ref=fill.ref, source_wallet=info["source_wallet"])
@@ -591,7 +598,9 @@ class Desk:
             log.warning("%s", what)
 
     def _settle_pending(self) -> None:
-        """Swaps written down but not known to have landed or failed: an unknown outcome, or a crash mid-swap."""
+        """Swaps written down but not known to have landed or failed: an unknown outcome, or a crash mid-swap.
+        Settled from the wallet's transactions; when those stay unreadable, from the wallet balance after a while, so
+        a position is never left without its stop because its last sell can't be settled."""
         now = self.clock()
         with self.lock:
             rows = [r for r in self.journal.pending(self.mode) if r["id"] not in self._executing
@@ -603,16 +612,17 @@ class Desk:
                     self.journal.drop_pending(r["id"])
                 log.warning("dropped a pending %s of %s left by a crash (paper)", r["side"], r["mint"][:6])
                 continue
-            try:
-                fill = self.broker.settle(r["mint"], r["side"], r["t"])
-                self._api_ok("wallet")
-            except Exception as e:
-                self._api_error(f"settling a swap: {type(e).__name__}: {e}", "wallet")
-                continue
             sym = info.get("symbol") or r["mint"][:6]
+            try:
+                fill = self.broker.settle(r["mint"], r["side"], r["t"], skip=self.journal.booked_refs(self.mode, r["mint"]))
+                self._api_ok("settle")
+            except Exception as e:
+                self._api_error(f"settling a swap: {type(e).__name__}: {e}", "settle")  # only a settle that works resets it
+                if now - r["t"] >= SETTLE_GIVE_UP_SECONDS:
+                    self._settle_from_balance(r, info, sym)
+                continue
             if fill is not None:
                 with self.lock:
-                    self.journal.drop_pending(r["id"])
                     if r["side"] == "buy":
                         self._open_real(info, r["mint"], fill)
                     else:
@@ -620,12 +630,31 @@ class Desk:
                         if p and p["closed_t"] is None:
                             self._finish(p, min(fill.raw, p["raw"] - p["sold_raw"]), fill.usd, info.get("kind") or "retry", fill.ref,
                                          note=f"{info.get('note', '')} (settled from the chain)".strip())
+                    self.journal.drop_pending(r["id"])  # after booking: a crash in between re-settles to 'already booked'
                 continue
             if now - r["t"] >= SETTLE_SECONDS:  # its blockhash has expired: it can no longer land
                 with self.lock:
                     self.journal.drop_pending(r["id"])
                 self._feed("WARN", "CHIEF", f"${sym}: the {r['side']} whose outcome was unknown did not land"
                                             + ("; the sell will be retried" if r["side"] == "sell" else ""))
+
+    def _settle_from_balance(self, r, info: dict, sym: str) -> None:
+        """The wallet's history stayed unreadable. A sell: stop waiting, and let the retry sell what the wallet holds.
+        A buy: if the wallet holds the coin and the journal doesn't, book it at the quoted cost (an estimate)."""
+        if r["side"] == "sell":
+            with self.lock:
+                self.journal.drop_pending(r["id"])
+            self._feed("WARN", "CHIEF", f"${sym}: couldn't read the chain to settle a sell; selling what the wallet holds", alert=True)
+            return
+        try:
+            have = self.broker.token_raw(r["mint"])
+        except Exception as e:
+            return self._api_error(f"token balance: {e}", "wallet")
+        with self.lock:
+            if have > 0 and not any(p["mint"] == r["mint"] for p in self.journal.open_positions(self.mode)):
+                self._open_real(info, r["mint"], Fill("buy", r["mint"], have, r["usd"], "wallet-balance"))
+                self._feed("WARN", "CHIEF", f"${sym}: booked from the wallet balance; its cost is the quote's estimate", alert=True)
+            self.journal.drop_pending(r["id"])
 
     # ---------------------------------------------------------------- shadow (rules-only arm)
     def _open_shadow(self, mint, symbol, decimals, station, pool, ticket, entry, plan: ExitPlan, did, impact_pct: float = 0.0) -> None:
@@ -714,6 +743,7 @@ class Desk:
         says nothing about the coin, and is counted as an API error instead (so a long failure trips the kill switch
         rather than leaving an old price in place forever). Returns whether this round's volume sample was taken."""
         mints = list(dict.fromkeys(p["mint"] for p in real + shadow))
+        mine = {p["mint"] for p in real}  # only these can fire the kill switch: a fake-money coin never sells real ones
         now = self.clock()
         try:
             got: dict[str, float] = {}
@@ -746,7 +776,8 @@ class Desk:
             self._api_ok("pricing")
             return volume_sample
         if dex_failed:
-            self._api_error("DexScreener prices for coins Jupiter can't price", "pricing")
+            if mine & set(missing):
+                self._api_error("DexScreener prices for coins Jupiter can't price", "pricing")
             return volume_sample
         held: dict[str, tuple[int, int]] = {}
         for p in real + shadow:  # what is held of each coin (the real book first), to ask for a sell quote
@@ -767,7 +798,7 @@ class Desk:
                         continue
                 except Exception as e:
                     if not _no_route(e):
-                        failed = True
+                        failed = failed or m in mine
                         log.info("sell quote for pricing failed: %s", type(e).__name__)
                         continue
             self._unpriced_n[m] = self._unpriced_n.get(m, 0) + 1  # the sources answered: nobody prices it
@@ -938,6 +969,7 @@ class Desk:
 
     def _finish(self, p, sold_raw: int, usd: float, kind: str, ref: str, note: str = "") -> bool:
         now = self.clock()
+        self._book_version += 1
         cost_share = p["cost_usd"] * sold_raw / p["raw"] if p["raw"] else 0.0
         self.journal.record_exit(mode=self.mode, book=p["book"], position_id=p["id"], t=int(now), kind=kind, raw=sold_raw,
                                  usd=usd, cost_share=cost_share, ref=ref)
@@ -965,38 +997,49 @@ class Desk:
 
     # ---------------------------------------------------------------- equity and hard limits
     def equity(self, cash: float | None = None) -> float:
-        """USDC + open coins at their value + buys sent but not yet booked (their USDC has left, their coins aren't
-        in the journal yet: without this a buy in flight reads as a loss and can fire a limit)."""
-        if cash is None:
-            cash = self.broker.usdc()
+        """USDC + open coins at their value + buys sent but not yet booked (their USDC may have left while their coins
+        aren't in the journal yet: without this a buy in flight reads as a loss and can fire a limit)."""
+        low, pending = self._equity_parts(self.broker.usdc() if cash is None else cash)
+        return low + pending
+
+    def _equity_parts(self, cash: float) -> tuple[float, float]:
+        """(USDC + booked coins, USD of buys in flight). The second may or may not have left the wallet yet."""
         with self.lock:
             value = sum((p["raw"] - p["sold_raw"]) / 10 ** p["decimals"] * self._value_price(p["mint"], p["entry_price"])
                         for p in self.journal.open_positions(self.mode))
-            value += sum(r["usd"] for r in self.journal.pending(self.mode) if r["side"] == "buy")
-        return cash + value
+            pending = sum(r["usd"] for r in self.journal.pending(self.mode) if r["side"] == "buy")
+        return cash + value, pending
 
     def mark(self) -> None:
+        """Equity, its high, the day's start, and the hard limits. The wallet read happens outside the lock, so a sell
+        booked by a worker during that read would make the numbers disagree: such a mark is skipped. Limits use the
+        equity with buys in flight counted (no false loss); the high and the day's start use it without them (no
+        inflated baseline); and a limit fires only when two marks in a row see it."""
         now, r = self.clock(), self.cfg.risk
+        version = self._book_version
         try:
-            cash = self.broker.usdc()  # the wallet read happens outside the lock
+            cash = self.broker.usdc()
             self._api_ok("wallet")
         except Exception as e:
             return self._api_error(f"wallet: {type(e).__name__}: {e}", "wallet")
         trip_reason = None
         with self.lock:
-            eq = self.equity(cash)
+            if self._book_version != version:
+                return
+            low, pending = self._equity_parts(cash)
+            eq = low + pending
             self.equity_now = eq
             self.journal.put(f"equity:{self.mode}", eq)
             self.journal.equity(self.mode, now, eq)
             if self.journal.get(f"start:{self.mode}") is None:
-                self.journal.put(f"start:{self.mode}", eq)
+                self.journal.put(f"start:{self.mode}", low)
                 self.journal.put(f"start_t:{self.mode}", now)
-            peak = max(float(self.journal.get(f"peak:{self.mode}") or eq), eq)
+            peak = max(float(self.journal.get(f"peak:{self.mode}") or low), low)
             self.journal.put(f"peak:{self.mode}", peak)
             day = day_of(now)
             if self.journal.get(f"day:{self.mode}") != day or self.journal.get(f"day_start:{self.mode}") is None:
                 self.journal.put(f"day:{self.mode}", day)
-                self.journal.put(f"day_start:{self.mode}", eq)
+                self.journal.put(f"day_start:{self.mode}", low)
             day_start = float(self.journal.get(f"day_start:{self.mode}") or eq)
             reset_at = self.journal.get(f"reset_at:{self.mode}")
             if reset_at != self._reset_seen:  # ./desk.sh reset while running: forget the streaks it cleared
@@ -1004,9 +1047,12 @@ class Desk:
                 self.errors = {}
                 self._save_errors()
             if not self.kill.tripped:
-                if peak > 0 and (peak - eq) / peak * 100 >= r.max_drawdown_pct:
+                dd = peak > 0 and (peak - eq) / peak * 100 >= r.max_drawdown_pct
+                daily = day_start > 0 and (day_start - eq) / day_start * 100 >= r.daily_loss_limit_pct
+                self._breaches = {k: self._breaches.get(k, 0) + 1 for k, hit in (("drawdown", dd), ("daily", daily)) if hit}
+                if self._breaches.get("drawdown", 0) >= 2:
                     trip_reason = f"equity fell {(peak - eq) / peak:.0%} from its high (limit {r.max_drawdown_pct:g}%)"
-                elif day_start > 0 and (day_start - eq) / day_start * 100 >= r.daily_loss_limit_pct and self.journal.get(f"daily_stop:{self.mode}") != day:
+                elif self._breaches.get("daily", 0) >= 2 and self.journal.get(f"daily_stop:{self.mode}") != day:
                     self.journal.put(f"daily_stop:{self.mode}", day)
                     self._feed("STOP", "CHIEF", f"down {(day_start - eq) / day_start:.0%} today: no new buys until 00:00 UTC", alert=True)
         if trip_reason:

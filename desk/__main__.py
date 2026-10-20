@@ -24,6 +24,14 @@ PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "desk.html"
 log = logging.getLogger("desk")
 
 
+def adopt_old_kill(state: Path, kill) -> None:
+    """Versions before the per-mode switches kept one state/desk_kill.json: a switch tripped there stays tripped."""
+    from phantom.risk import KillSwitch
+    old = KillSwitch(state / "desk_kill.json")
+    if old.path.exists() and old.tripped and not kill.tripped:
+        kill.trip(old.reason or "kill switch tripped before the upgrade")
+
+
 def setup_logging() -> None:
     Path("logs").mkdir(exist_ok=True)
     from logging.handlers import RotatingFileHandler
@@ -110,6 +118,7 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
         need("SOLANA_RPC_URL", "JUPITER_API_KEY")
         src = real_sources(cfg)
         journal, kill = Journal(STATE / "desk.sqlite"), KillSwitch(STATE / f"desk_{mode}_kill.json")  # paper's limits never sell live
+        adopt_old_kill(STATE, kill)
         sell_only = None
         if mode == "live":
             from desk.golive import go_live_report
@@ -351,7 +360,8 @@ def cmd_kill(reset: bool) -> None:
     for m, ks in switches.items():
         print(f"{m}: kill switch is {'ON: ' + ks.reason if ks.tripped else 'off'}.")
     answer = input("Type RESET to allow trading again: ").strip()
-    for ks in switches.values():
+    old = KillSwitch(STATE / "desk_kill.json")
+    for ks in [*switches.values(), *([old] if old.path.exists() else [])]:
         ks.reset(answer)
     j = Journal(STATE / "desk.sqlite")
     for m in ("paper", "live"):  # fresh error counts and baselines, or the old ones re-trip it at once

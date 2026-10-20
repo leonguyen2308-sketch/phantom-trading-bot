@@ -92,7 +92,11 @@ def go_live_report(state: Path, config: Path) -> Report:
     if desk_on and len(curve) > 1:
         span_days = int((curve[-1]["t"] - curve[0]["t"]) // 86400)
         days = {day_of(curve[0]["t"] + i * 86400) for i in range(span_days + 1)} | {day_of(curve[-1]["t"])}
-        ai = sum(float(v or 0) for k, v in j.get_prefix("ai_spend:paper:").items() if k.split(":", 2)[2] in days)
+        spend = {k.split(":", 2)[2]: v for k, v in j.get_prefix("ai_spend:paper:").items()}
+        for k, v in j.get_prefix("ai_spend:").items():  # before spend was kept per mode, it all came from paper runs
+            if k.count(":") == 1:
+                spend[k.split(":")[1]] = float(spend.get(k.split(":")[1]) or 0) + float(v or 0)
+        ai = sum(float(v or 0) for d, v in spend.items() if d in days)
     pnl = st.get("pnl_usd", 0.0) - ai
     checks.append(Check("paper made money", n >= MIN_PAPER_TRADES and pnl > 0,
                         f"paper P&L {pnl:+.2f} USD after trading costs" + (f" and {ai:.2f} USD of Claude" if desk_on else "")

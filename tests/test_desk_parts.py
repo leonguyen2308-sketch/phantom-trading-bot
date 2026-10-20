@@ -1,7 +1,6 @@
 """The desk's parts on their own: data sources (against a fake HTTP server), features, gates, go-live."""
 
 import json
-import os
 
 import httpx
 import pytest
@@ -346,3 +345,40 @@ def test_fresh_share_counts_a_wallet_with_no_history_and_an_unknown_age_is_unkno
 def test_g3_an_unknown_slippage_tolerance_is_a_kill():
     _, why = funnel.g3_depth(Quote("buy", "M", 10.0, 1000, 0, 0.5), Quote("sell", "M", 9.9, 1000, 0, 0.5), 6, CFG.depth)
     assert why == ["quote's slippage tolerance unknown"]
+
+
+class HistoryRpc:
+    """getSignaturesForAddress pages and getTransaction for LiveBroker.settle."""
+    def __init__(self, txs):
+        self.txs = txs  # newest first: (signature, blockTime, {mint: delta}) for the wallet
+
+    def signatures(self, address, limit=50, before=None, until=None):
+        i = 0 if before is None else next(k for k, t in enumerate(self.txs) if t[0] == before) + 1
+        return [{"signature": s, "blockTime": bt, "err": None} for s, bt, _ in self.txs[i:i + limit]]
+
+    def transaction(self, sig):
+        d = next(t[2] for t in self.txs if t[0] == sig)
+        pre = [{"owner": "W", "mint": m, "uiTokenAmount": {"amount": str(max(-v, 0))}} for m, v in d.items()]
+        post = [{"owner": "W", "mint": m, "uiTokenAmount": {"amount": str(max(v, 0))}} for m, v in d.items()]
+        return {"meta": {"preTokenBalances": pre, "postTokenBalances": post}}
+
+
+def _broker(txs):
+    from fomo.brokers import LiveBroker
+    b = LiveBroker.__new__(LiveBroker)
+    b.rpc, b.address = HistoryRpc(txs), "W"
+    return b
+
+
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def test_settle_pages_back_skips_booked_swaps_and_never_guesses():
+    sell = ("S2", 1000, {"M": -50, USDC_MINT: 2_000_000})
+    noise = [(f"x{i}", 1001 + i, {"OTHER": 1}) for i in range(30)][::-1]  # 30 newer transactions of other coins
+    assert _broker(noise + [sell]).settle("M", "sell", 995).raw == 50  # found past the first page of 25
+    rung1 = ("S1", 998, {"M": -40, USDC_MINT: 1_500_000})
+    assert _broker([rung1]).settle("M", "sell", 1000, skip={"S1"}) is None  # the earlier rung is already booked
+    flood = [(f"y{i}", 2000 + i, {"OTHER": 1}) for i in range(300)][::-1]
+    with pytest.raises(RuntimeError):
+        _broker(flood).settle("M", "sell", 1000)  # can't see back far enough: unknown, not "did not land"

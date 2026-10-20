@@ -63,8 +63,10 @@ class ExitPlan:
         return cls(**d)
 
 
-def make_plan(entry: float, atr_pct: float | None, entry_vol_5m: float, rules: PlanRules) -> tuple[ExitPlan | None, list[str]]:
-    """The plan for a buy at `entry`, or None with the reasons it isn't worth taking."""
+def make_plan(entry: float, atr_pct: float | None, entry_vol_5m: float, rules: PlanRules,
+              strict: bool = True) -> tuple[ExitPlan | None, list[str]]:
+    """The plan for a buy at `entry`, or None with the reasons it isn't worth taking. strict=False always returns a
+    plan (for coins already bought: an exit plan is needed whatever the rules now say about entering)."""
     if entry <= 0:
         return None, ["no entry price"]
     base = (atr_pct or 0) * rules.stop_atr_mult
@@ -76,7 +78,7 @@ def make_plan(entry: float, atr_pct: float | None, entry_vol_5m: float, rules: P
         why.append(f"first take-profit +{rules.ladder_pct[0]:g}% is under {rules.min_first_rung_r:g}x the {stop_pct:.0f}% stop")
     if stop_pct <= rules.round_trip_cost_pct * 3:
         why.append(f"stop {stop_pct:.1f}% is too close to the {rules.round_trip_cost_pct:.1f}% round-trip cost")
-    if why:
+    if why and strict:
         return None, why
     stop = entry * (1 - stop_pct / 100)
     plan = ExitPlan(entry=entry, stop=stop, initial_stop=stop, rungs=[entry * (1 + p / 100) for p in rules.ladder_pct],

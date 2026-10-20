@@ -201,6 +201,14 @@ class Journal:
         return self.db.execute("SELECT t, v FROM (SELECT t, v, ROW_NUMBER() OVER (ORDER BY t) AS i FROM equity WHERE mode=?) "
                                "WHERE (i - 1) % ? = 0 OR i = ? ORDER BY t", (mode, step, n)).fetchall()
 
+    @_locked
+    def booked_refs(self, mode: str, mint: str) -> set[str]:
+        """Signatures already booked for this coin (buys and every exit), so settling never books one twice."""
+        rows = self.db.execute("SELECT p.buy_ref AS r FROM positions p WHERE p.mode=? AND p.mint=? AND p.book='real' "
+                               "UNION SELECT e.ref FROM exits e JOIN positions p ON p.id = e.position_id "
+                               "WHERE p.mode=? AND p.mint=? AND p.book='real'", (mode, mint, mode, mint)).fetchall()
+        return {r["r"] for r in rows if r["r"]}
+
     # ---- swaps whose outcome isn't known yet ----
     @_locked
     def add_pending(self, mode: str, side: str, mint: str, position_id: int | None, raw: int, usd: float, t: float, info: dict) -> int:
