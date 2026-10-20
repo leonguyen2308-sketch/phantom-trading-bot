@@ -86,7 +86,8 @@ button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .vs .box { background: var(--panel-2); border-radius: 4px; padding: 8px; }
 .vs .box b { font-size: 16px; display: block; }
-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 11.5px; min-width: 640px; }
 th { text-align: left; color: var(--fg-3); font-weight: 500; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; padding: 5px 4px; border-bottom: 1px solid var(--line); }
 td { padding: 5px 4px; border-bottom: 1px dashed var(--line); }
 td.r, th.r { text-align: right; }
@@ -96,7 +97,7 @@ td.r, th.r { text-align: right; }
 .foot { color: #111; font-size: 11px; font-weight: 600; text-align: center; }
 
 @media (max-width: 1000px) { .g2, .g3 { grid-template-columns: 1fr; } .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 560px) { header h1 { font-size: 21px; } .right { margin-left: 0; } .feed li { grid-template-columns: 56px 1fr; } .feed li .seat, .feed li .p { display: none; } }
+@media (max-width: 560px) { header h1 { font-size: 21px; } .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .funnel-row { grid-template-columns: 64px 1fr 44px; } .leader { grid-template-columns: 56px 1fr 80px; } .right { margin-left: 0; } .feed li { grid-template-columns: 56px 1fr; } .feed li .seat, .feed li .p { display: none; } }
 </style>
 </head>
 <body>
@@ -170,8 +171,8 @@ td.r, th.r { text-align: right; }
 
   <section class="panel">
     <div class="label">On the ticket · open positions</div>
-    <table><thead><tr><th>Token</th><th>Station</th><th class="r">Entry</th><th class="r">Now</th><th class="r">P&amp;L</th><th class="r">Stop</th><th class="r">Take-profits</th><th class="r">Value</th><th class="r">Age</th></tr></thead>
-      <tbody id="pos"></tbody></table>
+    <div class="tablewrap"><table><thead><tr><th>Token</th><th>Station</th><th class="r">Entry</th><th class="r">Now</th><th class="r">P&amp;L</th><th class="r">Stop</th><th class="r">Take-profits</th><th class="r">Value</th><th class="r">Age</th></tr></thead>
+      <tbody id="pos"></tbody></table></div>
     <p class="muted" id="limits" style="margin:8px 0 0"></p>
   </section>
 
