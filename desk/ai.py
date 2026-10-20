@@ -205,8 +205,8 @@ class _Tally:
 class ClaudeDesk:
     """Calls the Anthropic API. Every call's cost is recorded against a daily budget."""
 
-    def __init__(self, cfg, journal=None, client=None, clock=time.time):
-        self.cfg, self.journal, self.clock = cfg, journal, clock
+    def __init__(self, cfg, journal=None, client=None, clock=time.time, mode: str = "paper"):
+        self.cfg, self.journal, self.clock, self.mode = cfg, journal, clock, mode
         if client is None:
             import anthropic  # imported here so tests and the demo don't need a key
             client = anthropic.Anthropic(max_retries=2, timeout=90.0)
@@ -219,13 +219,17 @@ class ClaudeDesk:
     def spent_today(self) -> float:
         if not self.journal:
             return getattr(self, "_spent", 0.0)
-        return float(self.journal.get(f"ai_spend:{self._day()}", 0.0) or 0.0)
+        return float(self.journal.get(self._key(), 0.0) or 0.0)
+
+    def _key(self) -> str:
+        return f"ai_spend:{self.mode}:{self._day()}"  # per mode: a paper run alongside live doesn't spend live's budget
 
     def _charge(self, usd: float) -> None:
         if not self.journal:
             self._spent = getattr(self, "_spent", 0.0) + usd
             return
-        self.journal.put(f"ai_spend:{self._day()}", self.spent_today() + usd)
+        with self.journal._lock:  # read-modify-write in one step: the scanner and a desk-test can charge at once
+            self.journal.put(self._key(), self.spent_today() + usd)
 
     def available(self) -> tuple[bool, str]:
         if not self.cfg.enabled:

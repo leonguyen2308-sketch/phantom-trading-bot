@@ -280,20 +280,21 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     j.equity("paper", 80 * 3600, 105)
     closed(j, "real", 30, 0.2)  # +6.7%/trade
     closed(j, "shadow", 20, 0.1)  # rules-only: +3.3%/trade
-    j.put("ai_spend:1970-01-01", 2.0)
+    j.put("ai_spend:paper:1970-01-01", 2.0)
+    j.put("ai_spend:live:1970-01-02", 50.0)  # live's Claude bill is not the paper record's
     for k in ("DESK_BOT_PRIVATE_KEY", "DESK_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL"):
         monkeypatch.setenv(k, "x")
     monkeypatch.setenv("DESK_LIVE", "yes")
     rep = golive.go_live_report(tmp_path, cfg)
     assert rep.ok, rep.text()
 
-    j.put("ai_spend:1970-01-02", 3.0)  # $6 of trading profit, $5 of Claude: still up, but no better than rules alone
+    j.put("ai_spend:paper:1970-01-02", 3.0)  # $6 of trading profit, $5 of Claude: still up, but no better than rules alone
     rep = golive.go_live_report(tmp_path, cfg)
     assert [c.name for c in rep.checks if not c.ok] == ["desk beats rules-only"]
-    j.put("ai_spend:1970-01-03", 2.0)  # now the Claude bill is bigger than the profit
+    j.put("ai_spend:paper:1970-01-03", 2.0)  # now the Claude bill is bigger than the profit
     assert {c.name for c in golive.go_live_report(tmp_path, cfg).checks if not c.ok} == {"paper made money", "desk beats rules-only"}
-    j.put("ai_spend:1970-01-02", 0.0)
-    j.put("ai_spend:1970-01-03", 0.0)
+    j.put("ai_spend:paper:1970-01-02", 0.0)
+    j.put("ai_spend:paper:1970-01-03", 0.0)
 
     cfg.write_text(cfg.read_text() + "\n# edited\n")
     assert not golive.go_live_report(tmp_path, cfg).ok  # any change to the rules needs a new approval

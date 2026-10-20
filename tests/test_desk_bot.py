@@ -440,12 +440,17 @@ def test_one_coin_that_cant_be_sold_never_fires_the_kill_switch(tmp_path):
 
 
 class LiveBroker(Broker):
+    """A live wallet: balances can fail to read, a swap can land while its outcome comes back unknown, and settle()
+    reads the landed swaps back the way the real one reads the wallet's transactions."""
     mode = "live"
 
     def __init__(self, w, usd=100.0):
         super().__init__(w, usd)
         self.reads_fail = False
         self.zero_reads = 0
+        self.unknown = None  # None, "landed" or "lost": the next swap's outcome comes back unknown
+        self.landed = []  # (t, Fill)
+        self.chain_down = False
 
     def holdings(self):
         if self.reads_fail:
@@ -463,22 +468,167 @@ class LiveBroker(Broker):
     def usdc(self):
         return self.cash
 
+    def execute(self, q):
+        from phantom.execution.jupiter import SwapOutcomeUnknown
+        how, self.unknown = self.unknown, None
+        if how == "lost":
+            raise SwapOutcomeUnknown("timed out")
+        fill = super().execute(q)
+        self.landed.append((self.w.clock(), fill))
+        if how == "landed":
+            raise SwapOutcomeUnknown("timed out")
+        return fill
 
-def test_live_buy_is_not_sent_when_the_wallet_cant_be_read_first(tmp_path):
-    d, w, clock = make(tmp_path)
+    def settle(self, mint, side, since):
+        if self.chain_down:
+            raise RuntimeError("rpc down")
+        return next((f for t, f in self.landed if t >= since - 5 and f.mint == mint and f.side == side), None)
+
+
+def live(tmp_path, cfg=None):
+    d, w, clock = make(tmp_path, cfg=cfg)
     d.mode = "live"
     d.broker = LiveBroker(w)
+    only_good(w)
+    return d, w, clock
+
+
+def test_live_buy_with_an_unknown_outcome_is_settled_from_the_chain_not_bought_twice(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.broker.unknown = "landed"
+    d.sweep()
+    assert d.journal.open_positions("live") == [] and len(d.journal.pending("live")) == 1
+    assert d.equity(d.broker.cash) == pytest.approx(100.0)  # the buy in flight still counts: no false drawdown
+    clock.t += d.cfg.scan.recheck_passed_minutes * 60 + 1
+    d.sweep()  # looked at again while it settles: not bought a second time
+    assert len(d.broker.landed) == 1
+    d.mark()
+    (p,) = d.journal.open_positions("live")
+    assert p["raw"] == d.broker.tok[GOOD] and d.journal.pending("live") == []
+
+
+def test_live_buy_that_did_not_land_is_dropped_after_its_blockhash_expires(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.broker.unknown = "lost"
+    d.sweep()
+    d.mark()
+    assert len(d.journal.pending("live")) == 1  # too early to say
+    clock.t += 200
+    d.mark()
+    assert d.journal.pending("live") == [] and d.journal.open_positions("live") == []
+
+
+def test_a_crash_mid_buy_is_settled_at_start_up(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.broker.unknown = "landed"  # the process dies right after sending: the pending row is all that's left
+    d.sweep()
+    d2 = Desk(mode="live", cfg=d.cfg, broker=d.broker, jup=w, dex=w, gecko=w, rug=w, holders=Holders(w), mint_info=w.mint_info,
+              prices=w, desk=FakeDesk(), journal=d.journal, kill=d.kill, clock=clock, threaded=False)
+    d2.mark()
+    assert len(d2.journal.open_positions("live")) == 1 and d2.journal.pending("live") == []
+
+
+def test_live_take_profit_with_an_unknown_outcome_is_not_sold_twice(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.sweep()
+    (p,) = d.journal.open_positions("live")
+    w.price[GOOD] = p["entry_price"] * 1.6
+    d.broker.unknown = "landed"
+    tick(d, clock, 10)  # the rung's sell lands, but its outcome is unknown
+    tick(d, clock, 10)  # the next round must not sell another rung while it settles
+    sells = [f for _, f in d.broker.landed if f.side == "sell"]
+    assert len(sells) == 1
+    tick(d, clock, 15)
+    (p2,) = d.journal.open_positions("live")
+    assert p2["sold_raw"] == sells[0].raw and p2["exit_pending"] == 0
+    assert {r["kind"] for r in d.journal.exits_by_kind("live")} == {"rung"}
+
+
+def test_live_stop_still_sells_when_the_wallet_balance_cant_be_read(tmp_path):
+    d, w, clock = live(tmp_path)
+    d.sweep()
+    (p,) = d.journal.open_positions("live")
+    w.price[GOOD] = p["entry_price"] * 0.5
     d.broker.reads_fail = True
+    tick(d, clock, 10)
+    (c,) = d.journal.closed_positions("live")
+    assert c["exit_kind"] == "stop" and d.broker.tok.get(GOOD, 0) == 0
+
+
+def test_our_own_failures_never_write_a_sellable_coin_off(tmp_path):
+    d, w, clock = make(tmp_path)
     only_good(w)
     d.sweep()
-    assert d.journal.open_positions("live") == [] and d.broker.cash == 100.0
+    (p,) = d.journal.open_positions("paper")
+    real_execute = d.broker.execute
+
+    def execute(q):
+        if q.side == "sell":
+            raise RuntimeError("Swap failed: slippage")
+        return real_execute(q)
+    d.broker.execute = execute
+    w.price[GOOD] = p["entry_price"] * 0.8  # a $3 position, now worth $2.40: through the stop
+    for _ in range(40):
+        tick(d, clock, 10)
+    (p,) = d.journal.open_positions("paper")
+    assert p["exit_pending"] and p["pending_kind"] == "stop"  # still held and still being sold
+    d.broker.execute = real_execute
+    clock.t += 61
+    tick(d, clock, 10)
+    (c,) = d.journal.closed_positions("paper")
+    assert c["exit_kind"] == "stop"  # the retry keeps the real reason
+
+
+def test_a_coin_with_no_route_and_no_price_is_written_off_with_its_loss_booked(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    d.sweep()
+    w.jup_hidden.add(GOOD)
+    w.dex_hidden.add(GOOD)
+    w.no_sell.add(GOOD)
+    for _ in range(50):
+        tick(d, clock, 10)
+    (c,) = d.journal.closed_positions("paper")
+    assert c["pnl"] == pytest.approx(-c["cost_usd"])
+    assert sum(r["pnl"] for r in d.journal.exits_by_kind("paper")) == pytest.approx(-c["cost_usd"])
+
+
+def test_shadow_book_pays_the_paper_costs(tmp_path):
+    d, w, clock = make(tmp_path, desk=FakeDesk(verdict="block"))
+    only_good(w)
+    d.sweep()
+    (s,) = d.journal.open_positions("paper", "shadow")
+    slip = d.cfg.paper.slippage_bps / 1e4
+    assert s["exit_cost"] == pytest.approx(slip + 0.005)  # paper slippage + the buy quote's 0.5% impact
+    assert s["raw"] / 1e6 * s["entry_price"] == pytest.approx(s["cost_usd"] * (1 - slip), rel=1e-4)
+
+
+def test_sell_only_blocks_buys_and_reset_clears_streaks_in_the_running_process(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    d.sell_only = "go-live checks fail"
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+    for _ in range(3):
+        clock.t += 16
+        d._api_error("x", "swap")
+    d.journal.put("reset_at:paper", 123)
+    d.mark()
+    assert d.api_errors == 0
+
+
+def test_old_error_streaks_are_forgotten_at_start_up(tmp_path):
+    d, w, clock = make(tmp_path)
+    clock.t += 16
+    d._api_error("x", "prices")
+    clock.t += 3600
+    d2 = Desk(mode="paper", cfg=d.cfg, broker=d.broker, jup=w, dex=w, gecko=w, rug=w, holders=Holders(w), mint_info=w.mint_info,
+              prices=w, desk=FakeDesk(), journal=d.journal, kill=d.kill, clock=clock, threaded=False)
+    assert d2.errors == {}
 
 
 def test_live_one_zero_balance_read_does_not_close_a_position(tmp_path):
-    d, w, clock = make(tmp_path)
-    d.mode = "live"
-    d.broker = LiveBroker(w)
-    only_good(w)
+    d, w, clock = live(tmp_path)
     d.sweep()
     (p,) = d.journal.open_positions("live")
     clock.t += 300
@@ -505,3 +655,37 @@ def test_error_counts_survive_a_restart_per_source(tmp_path):
     assert d2.errors == {"prices": 3}
     d2._api_ok("prices")
     assert d2.api_errors == 0
+
+
+def test_one_stuck_sell_does_not_hold_up_the_other_stops(tmp_path):
+    import threading
+    cfg = load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_exposure_pct=60))
+    clock = Clock()
+    w = World(clock)
+    d = Desk(mode="paper", cfg=cfg, broker=Broker(w), jup=w, dex=w, gecko=w, rug=w, holders=Holders(w), mint_info=w.mint_info,
+             prices=w, desk=FakeDesk(), journal=Journal(tmp_path / "j.sqlite"), kill=KillSwitch(tmp_path / "k.json"),
+             clock=clock, threaded=True)  # sells go to the worker pool
+    d.mark()
+    d.sweep()
+    a, b = d.journal.open_positions("paper")
+    release = threading.Event()
+    real_execute = d.broker.execute
+
+    def execute(q):
+        if q.side == "sell" and q.mint == a["mint"]:
+            release.wait(10)  # a swap stuck in Jupiter's confirmation poll
+        return real_execute(q)
+    d.broker.execute = execute
+    for m in (GOOD, BAD):
+        w.price[m] *= 0.5
+    tick(d, clock, 10)
+    for _ in range(100):
+        if d.journal.closed_positions("paper"):
+            break
+        threading.Event().wait(0.02)
+    assert [c["mint"] for c in d.journal.closed_positions("paper")] == [b["mint"]]  # B's stop sold while A's swap hangs
+    assert d.busy()
+    release.set()
+    d._pool.shutdown(wait=True)
+    assert len(d.journal.closed_positions("paper")) == 2 and not d.busy()

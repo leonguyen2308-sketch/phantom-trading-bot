@@ -71,6 +71,16 @@ def _quote(o: dict, side: str, mint: str) -> Quote:
     return Quote(side, mint, usd, raw, int(o.get("otherAmountThreshold") or 0), impact_bps(o) / 100, o)
 
 
+def _delta(tx: dict, owner: str, mint: str) -> int:
+    """Change in `owner`'s balance of `mint` (base units) made by one jsonParsed transaction."""
+    meta = tx.get("meta") or {}
+
+    def total(key):
+        return sum(int(((b.get("uiTokenAmount") or {}).get("amount")) or 0) for b in meta.get(key) or []
+                   if b.get("owner") == owner and b.get("mint") == mint)
+    return total("postTokenBalances") - total("preTokenBalances")
+
+
 class PaperBroker:
     mode = "paper"
 
@@ -160,6 +170,26 @@ class LiveBroker:
 
     def quote_sell(self, mint: str, raw: int) -> Quote:
         return _quote(self._order(mint, USDC, int(raw)), "sell", mint)
+
+    def settle(self, mint: str, side: str, since: float) -> Fill | None:
+        """What a swap sent at `since` (unix seconds) really did, read from the wallet's own transactions: the fill, or
+        None when no transaction since then moved this coin that way. Each transaction is read on its own, so swaps of
+        other coins landing at the same time don't mix in. Raises when the chain can't be read (try again later)."""
+        for s in self.rpc.signatures(self.address, limit=25):  # newest first
+            bt = s.get("blockTime")
+            if bt is not None and bt < since - 5:
+                break
+            if s.get("err") is not None:
+                continue
+            tx = self.rpc.transaction(s["signature"])
+            if not tx:
+                continue
+            d_tok, d_usd = _delta(tx, self.address, mint), _delta(tx, self.address, USDC)
+            if side == "buy" and d_tok > 0 and d_usd < 0:
+                return Fill("buy", mint, d_tok, -d_usd / 1e6, s["signature"])
+            if side == "sell" and d_tok < 0 and d_usd > 0:
+                return Fill("sell", mint, -d_tok, d_usd / 1e6, s["signature"])
+        return None
 
     def execute(self, q: Quote) -> Fill:
         res = submit_order(self.http, self.base, self.headers, self.kp, q.payload, self.poll_seconds, self.sleep)

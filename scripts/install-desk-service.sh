@@ -29,6 +29,7 @@ cat > "$PLIST" <<EOF
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
+  <key>ExitTimeOut</key><integer>150</integer>
   <key>StandardOutPath</key><string>$DIR/logs/desk-service.out</string>
   <key>StandardErrorPath</key><string>$DIR/logs/desk-service.err</string>
 </dict>

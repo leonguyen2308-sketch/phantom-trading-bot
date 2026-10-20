@@ -85,7 +85,7 @@ def go_live_report(state: Path, config: Path) -> Report:
     ai = 0.0
     if desk_on and len(curve) > 1:
         days = {day_of(curve[0]["t"] + i * 86400) for i in range(int(hours // 24) + 1)} | {day_of(curve[-1]["t"])}
-        ai = sum(float(v or 0) for k, v in j.get_prefix("ai_spend:").items() if k.split(":", 1)[1] in days)
+        ai = sum(float(v or 0) for k, v in j.get_prefix("ai_spend:paper:").items() if k.split(":", 2)[2] in days)
     pnl = st.get("pnl_usd", 0.0) - ai
     checks.append(Check("paper made money", n >= MIN_PAPER_TRADES and pnl > 0,
                         f"paper P&L {pnl:+.2f} USD after trading costs" + (f" and {ai:.2f} USD of Claude" if desk_on else "")

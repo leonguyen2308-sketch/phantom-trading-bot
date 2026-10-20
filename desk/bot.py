@@ -18,6 +18,7 @@ import queue
 import threading
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from desk import funnel
@@ -38,11 +39,27 @@ MARK_SECONDS = 15
 DUST_USD = 0.5
 WRITE_OFF_AFTER = 30  # failed sells of one position before it is written off (if worth little) or retried slowly
 SLOW_RETRY_SECONDS = 60
+SETTLE_SECONDS = 180  # a swap whose outcome was unknown and that hasn't shown up on chain by now never will
+STREAK_TTL_SECONDS = 1800  # error streaks saved more than this long ago are forgotten at start-up
 UNPRICED_SECONDS = 120  # no price from any source for this long: the coin is treated as worth nothing
 SHORT_READS = 3  # wallet reads in a row that must agree before the bot believes tokens left outside it
 RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC balances
 ALERT_REPEAT_SECONDS = 300
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
+PENDING = object()  # _execute: sent, outcome unknown
+
+
+def _no_route(e: Exception) -> bool:
+    """Jupiter answered that nobody will take the other side, as opposed to any other failure."""
+    return isinstance(e, ValueError) and "no route" in str(e).lower()
+
+
+def _load_errors(saved, now: float) -> dict[str, int]:
+    if isinstance(saved, dict) and "errors" in saved:
+        return {} if now - float(saved.get("t") or 0) > STREAK_TTL_SECONDS else {k: int(v) for k, v in saved["errors"].items()}
+    if isinstance(saved, dict):
+        return {k: int(v) for k, v in saved.items()}
+    return {"general": int(saved or 0)} if saved else {}
 
 
 class Desk:
@@ -56,8 +73,8 @@ class Desk:
         self.threaded = threaded
         self.lock = threading.RLock()
         self.queue: queue.Queue = queue.Queue()
-        saved = journal.get(f"api_errors:{mode}", 0)
-        self.errors: dict[str, int] = ({k: int(v) for k, v in saved.items()} if isinstance(saved, dict) else {"general": int(saved or 0)})
+        self.errors: dict[str, int] = _load_errors(journal.get(f"api_errors:{mode}", 0), clock())
+        self._reset_seen = journal.get(f"reset_at:{mode}")
         self._error_window: dict[str, float] = {}
         self._alerted: dict[str, float] = {}
         self._mints: dict[str, object] = {}
@@ -68,7 +85,14 @@ class Desk:
         self._retry_at: dict[int, float] = {}
         self._empty_reads: dict[int, int] = {}
         self._short_reads: dict[int, int] = {}
-        self._inflight: set[int] = set()
+        self._inflight: set[int] = set()  # positions whose sell is running
+        self._queued: set[int] = set()  # positions whose sell is waiting for a worker
+        self._executing: set[int] = set()  # pending buy rows whose swap is being sent
+        self._no_route_n: dict[int, int] = {}
+        self._unpriced_n: dict[str, int] = {}
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sell") if threaded else None
+        self.sell_only: str | None = None  # set when live trading may only sell (go-live checks no longer pass)
+        self.draining = False  # shutting down: no new buys
         self._alert_q: queue.Queue = queue.Queue()
         self._alert_thread: threading.Thread | None = None
         self.prices_now: dict[str, float] = {}
@@ -139,7 +163,7 @@ class Desk:
 
     def _save_errors(self) -> None:
         """Per source, so a restart in the middle of an outage keeps counting where it was (and nothing else does)."""
-        self.journal.put(f"api_errors:{self.mode}", {k: v for k, v in self.errors.items() if v})
+        self.journal.put(f"api_errors:{self.mode}", {"t": self.clock(), "errors": {k: v for k, v in self.errors.items() if v}})
 
     def _count(self, gate: str, mint: str) -> None:
         day = day_of(self.clock())
@@ -197,6 +221,10 @@ class Desk:
     def _buys_blocked(self) -> str | None:
         if self.kill.tripped:
             return "kill switch is on"
+        if self.sell_only:
+            return self.sell_only
+        if self.draining:
+            return "shutting down"
         today = day_of(self.clock())
         if self.journal.get(f"daily_stop:{self.mode}") == today:
             return "daily loss limit hit"
@@ -260,7 +288,7 @@ class Desk:
                 continue
             self._count("market", m)
             survivors.append((m, jt, dx, mf))
-        held = {p["mint"] for p in self.journal.open_positions(self.mode)}
+        held = {p["mint"] for p in self.journal.open_positions(self.mode)} | {r["mint"] for r in self.journal.pending(self.mode)}
         ready = [s for s in survivors if self._cool.get(s[0], 0) <= now and s[0] not in held]
         ready.sort(key=lambda s: ((s[3].get("vol_accel") or 0) * (s[3].get("organic_score") or 50)), reverse=True)
         checking = min(len(ready), sc.deep_checks_per_sweep)
@@ -275,7 +303,7 @@ class Desk:
     def _evaluate_mint(self, mint: str, station: str, source_wallet: str | None = None) -> None:
         """A TRACK signal: fetch the market numbers for one mint, then run the same funnel."""
         now = self.clock()
-        if self._cool.get(mint, 0) > now or any(p["mint"] == mint for p in self.journal.open_positions(self.mode)):
+        if self._cool.get(mint, 0) > now or any(p["mint"] == mint for p in [*self.journal.open_positions(self.mode), *self.journal.pending(self.mode)]):
             return
         try:
             jt = self.jup.search([mint]).get(mint)
@@ -296,16 +324,17 @@ class Desk:
     # ---------------------------------------------------------------- one candidate
     def ticket_usd(self) -> tuple[float, str]:
         r = self.cfg.risk
+        try:
+            cash = self.broker.usdc()
+        except Exception as e:
+            return 0.0, f"wallet unreadable ({type(e).__name__})"
         with self.lock:
             opens = self.journal.open_positions(self.mode)
-            try:
-                cash = self.broker.usdc()
-            except Exception as e:
-                return 0.0, f"wallet unreadable ({type(e).__name__})"
-        if len(opens) >= r.max_open_positions:
-            return 0.0, f"already {len(opens)} open positions"
+            pend = [x for x in self.journal.pending(self.mode) if x["side"] == "buy"]
+        if len(opens) + len(pend) >= r.max_open_positions:
+            return 0.0, f"already {len(opens) + len(pend)} open positions"
         eq = self.equity_now or cash
-        open_cost = sum(p["cost_usd"] * (p["raw"] - p["sold_raw"]) / p["raw"] for p in opens if p["raw"])
+        open_cost = sum(p["cost_usd"] * (p["raw"] - p["sold_raw"]) / p["raw"] for p in opens if p["raw"]) + sum(x["usd"] for x in pend)
         size = min(eq * r.position_pct / 100, r.max_position_usd, eq * r.max_exposure_pct / 100 - open_cost, cash)
         if size < r.min_position_usd:
             return 0.0, f"ticket ${max(size, 0):.2f} under the ${r.min_position_usd:g} minimum"
@@ -453,7 +482,7 @@ class Desk:
                                         verdict=opinion.verdict if opinion else None, conviction=opinion.conviction if opinion else None,
                                         action=action, note="; ".join(reasons) or desk_note, size_usd=size if action == "buy" else 0.0)
             # the rules-only arm: every token that passed the code gates, whatever the desk said
-            self._open_shadow(mint, symbol, info.decimals, station, pool, ticket, entry, plan, did)
+            self._open_shadow(mint, symbol, info.decimals, station, pool, ticket, entry, plan, did, df.get("impact_pct") or 0.0)
             self.latest = {"t": int(now), "mint": mint, "symbol": symbol, "station": station, "snapshot": snap, "checks": checks,
                            "candles": candles[-48:], "plan": plan.to_dict(), "opinion": opinion.to_dict() if opinion else None,
                            "action": action, "reasons": reasons, "desk_note": desk_note}
@@ -477,74 +506,64 @@ class Desk:
         if moved > self.cfg.depth.max_requote_move_pct:
             self._feed("SKIP", "CHIEF", f"${symbol}: price ran {moved:.0f}% while the desk was deciding")
             return "ran"
+        info = {"symbol": symbol, "decimals": decimals, "station": station, "pool": pool, "decided_price": decided_price,
+                "atr": atr, "vol5": vol5, "did": did, "source_wallet": source_wallet}
         with self.lock:  # last look, right before the money moves: the kill switch or a limit may have fired meanwhile
             blocked = self._buys_blocked()
             opens = self.journal.open_positions(self.mode)
-            if not blocked and len(opens) >= self.cfg.risk.max_open_positions:
-                blocked = f"already {len(opens)} open positions"
-            if not blocked and any(p["mint"] == mint for p in opens):
+            pend = [r for r in self.journal.pending(self.mode) if r["side"] == "buy"]
+            if not blocked and len(opens) + len(pend) >= self.cfg.risk.max_open_positions:
+                blocked = f"already {len(opens) + len(pend)} open positions"
+            if not blocked and any(r["mint"] == mint for r in [*opens, *pend]):
                 blocked = "already holding it"
+            if not blocked:  # written down before it is sent, so a crash or an unknown outcome is settled, not lost
+                pid = self.journal.add_pending(self.mode, "buy", mint, None, q.raw, q.usd, self.clock(), info)
+                self._executing.add(pid)
         if blocked:
             self._feed("SKIP", "CHIEF", f"${symbol}: {blocked}")
             return "blocked"
-        fill = self._execute(q, "buy")
-        if fill is None or fill.raw <= 0:
-            return "fill-failed"
-        fill_price = fill.usd / (fill.raw / 10 ** decimals)
-        plan, _ = make_plan(fill_price, atr, vol5, self.cfg.plan)
-        if plan is None:  # the fill moved the levels so far the plan no longer passes: keep the decided one, re-based
-            plan, _ = make_plan(decided_price, atr, vol5, self.cfg.plan)
-        with self.lock:
-            self.journal.open_position(mode=self.mode, book="real", mint=mint, symbol=symbol, decimals=decimals, station=station,
-                                       pool=pool, opened_t=int(self.clock()), cost_usd=fill.usd, raw=fill.raw, entry_price=fill_price,
-                                       plan=plan.to_dict(), decision_id=did, buy_ref=fill.ref, source_wallet=source_wallet)
-            self._priced(mint, fill_price)
-            self.journal.count(self.mode, self.clock(), "filled")
-        self._feed("BUY", "CHIEF", f"${symbol} · ${fill.usd:,.2f} at {fill_price:.6g} · stop {plan.stop:.6g} (-{plan.stop_pct:.0f}%) · "
-                                   f"TP {', '.join(f'+{p:g}%' for p in self.cfg.plan.ladder_pct)}", alert=True)
+        try:
+            fill = self._execute(q)
+            with self.lock:
+                if fill is PENDING:
+                    self._feed("WARN", "CHIEF", f"${symbol}: buy outcome unknown; settling it from the wallet's transactions", alert=True)
+                    return "pending"
+                self.journal.drop_pending(pid)
+                if fill is None or fill.raw <= 0:
+                    return "fill-failed"
+                self._open_real(info, mint, fill)
+        finally:
+            with self.lock:
+                self._executing.discard(pid)
         return "buy"
 
-    def _execute(self, q, side: str, full: bool = False) -> Fill | None:
-        """Send it; on an unknown outcome compare the wallet with what it held before, to learn what really happened.
+    def _open_real(self, info: dict, mint: str, fill: Fill) -> None:
+        dec = info["decimals"]
+        fill_price = fill.usd / (fill.raw / 10 ** dec)
+        plan, _ = make_plan(fill_price, info["atr"], info["vol5"], self.cfg.plan)
+        if plan is None:  # the fill moved the levels so far the plan no longer passes: keep the decided one, re-based
+            plan, _ = make_plan(info["decided_price"], info["atr"], info["vol5"], self.cfg.plan)
+        with self.lock:
+            self.journal.open_position(mode=self.mode, book="real", mint=mint, symbol=info["symbol"], decimals=dec, station=info["station"],
+                                       pool=info["pool"], opened_t=int(self.clock()), cost_usd=fill.usd, raw=fill.raw, entry_price=fill_price,
+                                       plan=plan.to_dict(), decision_id=info["did"], buy_ref=fill.ref, source_wallet=info["source_wallet"])
+            self._priced(mint, fill_price)
+            self.journal.count(self.mode, self.clock(), "filled")
+        self._feed("BUY", "CHIEF", f"${info['symbol']} · ${fill.usd:,.2f} at {fill_price:.6g} · stop {plan.stop:.6g} (-{plan.stop_pct:.0f}%) · "
+                                   f"TP {', '.join(f'+{p:g}%' for p in self.cfg.plan.ladder_pct)}", alert=True)
 
-        Live, a buy or a partial sell is only sent once that "before" is known: without it an unknown outcome can't be
-        settled, and guessing wrong either loses track of a coin or sells a take-profit twice. A full sell can go
-        without it, because re-reading the wallet's balance afterwards settles it."""
-        before_tok = before_usd = None
-        if self.mode == "live":
-            for _ in range(3):
-                try:
-                    h = self.broker.holdings()
-                    before_tok, before_usd = h.get(q.mint, 0), h.get(USDC, 0) / 1e6
-                    break
-                except Exception as e:
-                    log.warning("wallet read before a swap failed: %s", type(e).__name__)
-            if before_tok is None and not (side == "sell" and full):
-                self._api_error("wallet unreadable before a swap, so it was not sent", "wallet")
-                return None
+    def _execute(self, q):
+        """Send it. Returns the Fill, None when it certainly failed, or PENDING when nobody knows yet (live only):
+        the pending row written before sending is then settled from the wallet's transactions (_settle_pending)."""
         try:
             fill = self.broker.execute(q)
             self._api_ok("swap")
             return fill
         except SwapOutcomeUnknown as e:
-            if before_tok is None:
-                log.warning("swap outcome unknown (%s); the next sell attempt re-reads the wallet", e)
-                return None
-            for _ in range(6):
-                time.sleep(5)
-                try:
-                    h = self.broker.holdings()
-                except Exception:
-                    continue
-                d_tok, d_usd = h.get(q.mint, 0) - before_tok, h.get(USDC, 0) / 1e6 - before_usd
-                if side == "buy" and d_tok > 0:
-                    return Fill("buy", q.mint, d_tok, -d_usd if d_usd < 0 else q.usd, "reconciled-from-wallet")
-                if side == "sell" and d_tok < 0:
-                    return Fill("sell", q.mint, -d_tok, max(d_usd, 0.0), "reconciled-from-wallet")
-            self._swap_failed(side, f"swap outcome unknown and the wallet shows no change: {e}")
-            return None
+            log.warning("swap outcome unknown (%s); it will be settled from the chain", e)
+            return PENDING
         except Exception as e:
-            self._swap_failed(side, f"swap: {type(e).__name__}: {e}")
+            self._swap_failed(q.side, f"swap: {type(e).__name__}: {e}")
             return None
 
     def _swap_failed(self, side: str, what: str) -> None:
@@ -555,17 +574,55 @@ class Desk:
         else:
             log.warning("%s", what)
 
+    def _settle_pending(self) -> None:
+        """Swaps written down but not known to have landed or failed: an unknown outcome, or a crash mid-swap."""
+        now = self.clock()
+        with self.lock:
+            rows = [r for r in self.journal.pending(self.mode) if r["id"] not in self._executing
+                    and not (r["position_id"] and (r["position_id"] in self._inflight))]
+        for r in rows:
+            info = json.loads(r["info"] or "{}")
+            if self.mode != "live":  # paper and demo swaps are instant: a row left over means a crash between two lines
+                with self.lock:
+                    self.journal.drop_pending(r["id"])
+                log.warning("dropped a pending %s of %s left by a crash (paper)", r["side"], r["mint"][:6])
+                continue
+            try:
+                fill = self.broker.settle(r["mint"], r["side"], r["t"])
+                self._api_ok("wallet")
+            except Exception as e:
+                self._api_error(f"settling a swap: {type(e).__name__}: {e}", "wallet")
+                continue
+            sym = info.get("symbol") or r["mint"][:6]
+            if fill is not None:
+                with self.lock:
+                    self.journal.drop_pending(r["id"])
+                    if r["side"] == "buy":
+                        self._open_real(info, r["mint"], fill)
+                    else:
+                        p = self.journal.position(r["position_id"])
+                        if p and p["closed_t"] is None:
+                            self._finish(p, min(fill.raw, p["raw"] - p["sold_raw"]), fill.usd, info.get("kind") or "retry", fill.ref,
+                                         note=f"{info.get('note', '')} (settled from the chain)".strip())
+                continue
+            if now - r["t"] >= SETTLE_SECONDS:  # its blockhash has expired: it can no longer land
+                with self.lock:
+                    self.journal.drop_pending(r["id"])
+                self._feed("WARN", "CHIEF", f"${sym}: the {r['side']} whose outcome was unknown did not land"
+                                            + ("; the sell will be retried" if r["side"] == "sell" else ""))
+
     # ---------------------------------------------------------------- shadow (rules-only arm)
-    def _open_shadow(self, mint, symbol, decimals, station, pool, ticket, entry, plan: ExitPlan, did) -> None:
+    def _open_shadow(self, mint, symbol, decimals, station, pool, ticket, entry, plan: ExitPlan, did, impact_pct: float = 0.0) -> None:
         if any(p["mint"] == mint for p in self.journal.open_positions(self.mode, "shadow")):
             return  # one rules-only position per coin at a time, or a coin looked at again would count twice
-        cost = self.cfg.plan.round_trip_cost_pct / 2 / 100
-        raw = int(ticket * (1 - cost) / entry * 10 ** decimals) if entry else 0
+        slip = self.cfg.paper.slippage_bps / 1e4  # the same costs the paper broker charges the real arm
+        raw = int(ticket * (1 - slip) / entry * 10 ** decimals) if entry else 0
         if raw <= 0:
             return
         self.journal.open_position(mode=self.mode, book="shadow", mint=mint, symbol=symbol, decimals=decimals, station=station,
                                    pool=pool, opened_t=int(self.clock()), cost_usd=ticket, raw=raw, entry_price=entry,
-                                   plan=plan.to_dict(), decision_id=did, buy_ref="shadow")
+                                   plan=plan.to_dict(), decision_id=did, buy_ref="shadow",
+                                   exit_cost=slip + max(impact_pct, 0.0) / 100)  # selling back costs about what buying did
         self._priced(mint, entry)
 
     # ================================================================ the manager (main thread)
@@ -574,6 +631,7 @@ class Desk:
         if not self.threaded:
             try:
                 self.scan_once()
+                self._api_ok("scan")
             except Exception as e:
                 log.exception("scan error")
                 self._api_error(f"scan: {type(e).__name__}: {e}", "scan")
@@ -585,6 +643,11 @@ class Desk:
         if now - self.last["mark"] >= MARK_SECONDS:
             self.last["mark"] = now
             self.mark()
+
+    def busy(self) -> bool:
+        """A swap is being sent or waiting to be: shutting down now could leave it unaccounted for."""
+        with self.lock:
+            return bool(self._inflight or self._queued or self._executing)
 
     def _poll_track(self) -> None:
         try:
@@ -608,25 +671,32 @@ class Desk:
                     mine = [p for p in self.journal.open_positions(self.mode) if p["mint"] == sw.mint and p["source_wallet"] == sw.wallet]
                 for p in mine:
                     self._feed("SIG", "SCOUT", f"tracked wallet {name} sold {sw.sold_fraction:.0%} of ${p['symbol']}")
-                    self._sell(p, 1.0, "exit", f"the tracked wallet sold {sw.sold_fraction:.0%}")
+                    self._dispatch_sell(p, 1.0, "exit", f"the tracked wallet sold {sw.sold_fraction:.0%}")
 
     # ---------------------------------------------------------------- prices
     def _priced(self, mint: str, price: float) -> None:
         self.prices_now[mint] = price
         self.price_t[mint] = self.clock()
         self.unpriced.pop(mint, None)
+        self._unpriced_n.pop(mint, None)
+
+    def _dead(self, mint: str) -> bool:
+        """Every source answered, round after round for UNPRICED_SECONDS, that nobody prices or buys this coin."""
+        since = self.unpriced.get(mint)
+        return (since is not None and self.clock() - since >= UNPRICED_SECONDS
+                and self._unpriced_n.get(mint, 0) >= UNPRICED_SECONDS // PRICE_SECONDS)
 
     def _value_price(self, mint: str, fallback: float) -> float:
-        """The price to value a holding at: the last one, unless no source has priced the coin for a while (then 0)."""
-        since = self.unpriced.get(mint)
-        if since is not None and self.clock() - since >= UNPRICED_SECONDS:
+        """The price to value a holding at: the last one, unless the coin is dead (then 0)."""
+        if self._dead(mint):
             return 0.0
         return self.prices_now.get(mint) or fallback
 
     def _refresh_prices(self, real: list, shadow: list, volume_sample: bool) -> bool:
-        """Jupiter first; any coin it left out from DexScreener; a real holding still unpriced from a sell quote.
-        A coin is marked unpriced only when the sources answered without it, never because a request failed.
-        Returns whether this round's volume sample was taken."""
+        """Jupiter first; any coin it left out from DexScreener; anything still unpriced from a sell quote for what is
+        held. A coin counts toward 'unpriced' only on rounds where the sources answered without it: a failed request
+        says nothing about the coin, and is counted as an API error instead (so a long failure trips the kill switch
+        rather than leaving an old price in place forever). Returns whether this round's volume sample was taken."""
         mints = list(dict.fromkeys(p["mint"] for p in real + shadow))
         now = self.clock()
         try:
@@ -640,11 +710,12 @@ class Desk:
         for m, v in got.items():
             self._priced(m, v)
         missing = [m for m in mints if m not in got]
-        pairs = None
+        pairs, dex_failed = None, False
         if volume_sample or missing:
             try:
                 pairs = self.mdex.tokens(mints if volume_sample else missing)
             except Exception as e:
+                dex_failed = True
                 log.info("DexScreener (manager) failed: %s", type(e).__name__)
         if volume_sample:
             self.last["volume"] = now
@@ -655,30 +726,43 @@ class Desk:
                     v = (pair.get("volume") or {}).get("m5")
                     if v is not None:
                         self.vol_now[m] = float(v)
-        if pairs is None:
+        if not missing:
+            self._api_ok("pricing")
             return volume_sample
-        left_raw = {p["mint"]: p["raw"] - p["sold_raw"] for p in real}
+        if dex_failed:
+            self._api_error("DexScreener prices for coins Jupiter can't price", "pricing")
+            return volume_sample
+        held: dict[str, tuple[int, int]] = {}
+        for p in real + shadow:  # what is held of each coin (the real book first), to ask for a sell quote
+            if p["mint"] not in held and p["raw"] - p["sold_raw"] > 0:
+                held[p["mint"]] = (p["raw"] - p["sold_raw"], p["decimals"])
+        failed = False
         for m in missing:
             px = _num((pairs.get(m) or {}).get("priceUsd"))
             if px and px > 0:
                 self._priced(m, px)
                 continue
-            if left_raw.get(m, 0) > 0:
+            if m in held:
+                raw, dec = held[m]
                 try:
-                    q = self.broker.quote_sell(m, left_raw[m])
-                    dec = next(p["decimals"] for p in real if p["mint"] == m)
+                    q = self.broker.quote_sell(m, raw)
                     if q.usd > 0 and q.raw:
                         self._priced(m, q.usd / (q.raw / 10 ** dec))
                         continue
-                except ValueError:
-                    pass  # no route back: the sources agree nobody will pay for it
                 except Exception as e:
-                    log.info("sell quote for pricing failed: %s", type(e).__name__)
-                    continue
+                    if not _no_route(e):
+                        failed = True
+                        log.info("sell quote for pricing failed: %s", type(e).__name__)
+                        continue
+            self._unpriced_n[m] = self._unpriced_n.get(m, 0) + 1  # the sources answered: nobody prices it
             if m not in self.unpriced:
                 self.unpriced[m] = now
                 sym = next((p["symbol"] for p in real + shadow if p["mint"] == m), m[:6])
                 self._feed("WARN", "CHIEF", f"no price for ${sym} from Jupiter, DexScreener or a sell quote")
+        if failed:
+            self._api_error("sell quotes for coins nobody else prices", "pricing")
+        else:
+            self._api_ok("pricing")
         return volume_sample
 
     def manage(self, volume_sample: bool = False) -> None:
@@ -691,27 +775,27 @@ class Desk:
         now = self.clock()
         sells: list[tuple] = []
         with self.lock:
+            settling = {r["position_id"] for r in self.journal.pending(self.mode) if r["position_id"]}
             for p in self.journal.open_positions(self.mode, "real") + self.journal.open_positions(self.mode, "shadow"):
                 real_book = p["book"] == "real"
-                if real_book and p["id"] in self._inflight:
+                if real_book and (p["id"] in self._inflight or p["id"] in self._queued or p["id"] in settling):
                     continue
                 if real_book and self.kill.tripped:
                     sells.append((p, 1.0, "kill", "kill switch"))
                     continue
                 if real_book and p["exit_pending"]:
                     if now >= self._retry_at.get(p["id"], 0):
-                        sells.append((p, float(p["exit_pending"]), "retry", "retrying a failed sell"))
+                        sells.append((p, float(p["exit_pending"]), p["pending_kind"] or "retry", "retrying a failed sell"))
                     continue
-                since = self.unpriced.get(p["mint"])
-                if since is not None and now - since >= UNPRICED_SECONDS:
-                    note = f"no price from any source for {(now - since) / 60:.0f} min: treating it as dead"
+                if self._dead(p["mint"]):
+                    note = f"no price from any source for {(now - self.unpriced[p['mint']]) / 60:.0f} min: treating it as dead"
                     if real_book:
                         sells.append((p, 1.0, "stop", note))
                     else:
                         self._finish(p, p["raw"] - p["sold_raw"], 0.0, "stop", "shadow", note=note)
                     continue
                 price = self.prices_now.get(p["mint"])
-                if not price or since is not None:
+                if not price or p["mint"] in self.unpriced:
                     continue
                 plan = ExitPlan.from_dict(json.loads(p["plan"]))
                 left = (p["raw"] - p["sold_raw"]) / p["raw"] if p["raw"] else 0.0
@@ -723,21 +807,46 @@ class Desk:
                     sells.append((self.journal.position(p["id"]), act.fraction, act.kind, act.note))
                 else:
                     self._shadow_sell(self.journal.position(p["id"]), act.fraction, act.kind, price)
-        for p, fraction, kind, note in sells:  # swaps outside the lock
+        for p, fraction, kind, note in sells:
+            self._dispatch_sell(p, fraction, kind, note)
+
+    def _dispatch_sell(self, p, fraction: float, kind: str, note: str) -> None:
+        """Live and paper: each sell on a worker, so one slow swap never holds up the other stops or the limits."""
+        if self._pool is None:
             self._sell(p, fraction, kind, note)
+            return
+        with self.lock:
+            if p["id"] in self._queued or p["id"] in self._inflight:
+                return
+            self._queued.add(p["id"])
+        self._pool.submit(self._sell_job, p, fraction, kind, note)
+
+    def _sell_job(self, p, fraction: float, kind: str, note: str) -> None:
+        try:
+            self._sell(p, fraction, kind, note)
+        except Exception:
+            log.exception("sell of %s failed", p["symbol"])
+        finally:
+            with self.lock:
+                self._queued.discard(p["id"])
 
     def _shadow_sell(self, p, fraction: float, kind: str, price: float) -> None:
         left = p["raw"] - p["sold_raw"]
         raw = left if fraction >= 0.999 else int(left * fraction)
-        usd = raw / 10 ** p["decimals"] * price * (1 - self.cfg.plan.round_trip_cost_pct / 2 / 100)
+        cost = p["exit_cost"] if p["exit_cost"] else self.cfg.plan.round_trip_cost_pct / 2 / 100
+        usd = raw / 10 ** p["decimals"] * price * (1 - cost)
         self._finish(p, raw, usd, kind, "shadow")
 
     def _sell(self, p, fraction: float, kind: str, note: str) -> bool:
+        """Sell `fraction` of what is left. Live, the wallet balance caps the amount when it can be read; when it can't,
+        the sell still goes (Jupiter refuses an order the wallet can't cover, and the next round settles it)."""
         pid = p["id"]
         with self.lock:
             p = self.journal.position(pid)
             if p["closed_t"] is not None or pid in self._inflight:
                 return p["closed_t"] is not None
+            if any(r["position_id"] == pid for r in self.journal.pending(self.mode)):
+                return False  # a sell of it is still being settled
             left = p["raw"] - p["sold_raw"]
             if left <= 0:
                 return True
@@ -746,42 +855,63 @@ class Desk:
             if (left - raw) / 10 ** p["decimals"] * price < DUST_USD:
                 raw = left
             self._inflight.add(pid)
+        n = 0
         try:
-            fill, why = None, ""
+            fill, why, no_route, have = None, "", False, None
             if self.mode == "live":
                 try:
                     have = self.broker.token_raw(p["mint"])
-                    raw = min(raw, have)
-                    self._empty_reads[pid] = self._empty_reads.get(pid, 0) + 1 if have <= 0 else 0
+                    self._api_ok("wallet")
                 except Exception as e:
                     self._api_error(f"token balance: {e}", "wallet")
-                    raw, why = 0, "wallet unreadable"
-            if raw <= 0 and self._empty_reads.get(pid, 0) >= SHORT_READS:
-                with self.lock:
-                    self._empty_reads.pop(pid, None)
-                    return self._finish(self.journal.position(pid), 0, 0.0, kind, "wallet-empty", note="wallet already empty")
+                if have is not None:
+                    self._empty_reads[pid] = self._empty_reads.get(pid, 0) + 1 if have <= 0 else 0
+                    raw = min(raw, have)
+                    if raw <= 0 and self._empty_reads[pid] >= SHORT_READS:
+                        with self.lock:
+                            self._empty_reads.pop(pid, None)
+                            p = self.journal.position(pid)
+                            return self._finish(p, p["raw"] - p["sold_raw"], 0.0, kind, "wallet-empty", note="wallet already empty")
+                    if raw <= 0:
+                        why = "wallet shows none of it yet; reading again"
             if raw > 0:
                 try:
-                    fill = self._execute(self.broker.quote_sell(p["mint"], raw), "sell", full=raw >= left)
+                    q = self.broker.quote_sell(p["mint"], raw)
                 except Exception as e:
-                    why = f"{type(e).__name__}: {e}"
-            elif not why:
-                why = "wallet shows none of it yet; reading again"
+                    why, no_route = f"{type(e).__name__}: {e}", _no_route(e)
+                else:
+                    with self.lock:
+                        spid = self.journal.add_pending(self.mode, "sell", p["mint"], pid, raw, q.usd, self.clock(),
+                                                        {"kind": kind, "note": note, "symbol": p["symbol"]})
+                    fill = self._execute(q)
+                    if fill is PENDING:
+                        with self.lock:
+                            self.journal.update_position(pid, exit_pending=max(float(p["exit_pending"] or 0), fraction),
+                                                         pending_kind=p["pending_kind"] or kind)
+                        self._feed("WARN", "CHIEF", f"${p['symbol']}: sell outcome unknown; settling it from the wallet's transactions")
+                        return False
+                    with self.lock:
+                        self.journal.drop_pending(spid)
+                    if fill is None:
+                        why = "the swap failed"
             with self.lock:
                 p = self.journal.position(pid)
                 if fill is not None:
-                    self._sell_failures.pop(pid, None)
-                    self._retry_at.pop(pid, None)
+                    for d in (self._sell_failures, self._no_route_n, self._retry_at):
+                        d.pop(pid, None)
                     return self._finish(p, fill.raw, fill.usd, kind, fill.ref, note=note)
                 n = self._sell_failures[pid] = self._sell_failures.get(pid, 0) + 1
+                if no_route and (self.mode != "live" or (have or 0) > 0):  # only proof nobody will buy it counts
+                    self._no_route_n[pid] = self._no_route_n.get(pid, 0) + 1
                 worth = self._value_price(p["mint"], p["entry_price"]) * (p["raw"] - p["sold_raw"]) / 10 ** p["decimals"]
-                if n >= WRITE_OFF_AFTER and worth < DUST_USD * 10:
-                    self._sell_failures.pop(pid, None)
-                    return self._finish(p, 0, 0.0, kind, "none", note="no way to sell it: written off as worthless")
-                self.journal.update_position(pid, exit_pending=max(float(p["exit_pending"] or 0), fraction))
+                if self._no_route_n.get(pid, 0) >= WRITE_OFF_AFTER and worth < DUST_USD * 10:
+                    for d in (self._sell_failures, self._no_route_n, self._retry_at):
+                        d.pop(pid, None)
+                    return self._finish(p, p["raw"] - p["sold_raw"], 0.0, kind, "none", note="no route to sell it: written off as worthless")
+                self.journal.update_position(pid, exit_pending=max(float(p["exit_pending"] or 0), fraction), pending_kind=p["pending_kind"] or kind)
                 if n >= WRITE_OFF_AFTER:
                     self._retry_at[pid] = self.clock() + SLOW_RETRY_SECONDS
-            if why:
+            if why and (n == 1 or n % WRITE_OFF_AFTER == 0):  # not on every 10 s retry
                 self._feed("WARN", "CHIEF", f"can't sell ${p['symbol']} yet: {why}"[:300])
             wait = SLOW_RETRY_SECONDS if n >= WRITE_OFF_AFTER else PRICE_SECONDS
             self._alert(f"SELL of ${p['symbol']} failed ({note}); retrying every {wait}s.")
@@ -797,7 +927,7 @@ class Desk:
                                  usd=usd, cost_share=cost_share, ref=ref)
         sold_total, sold_usd = p["sold_raw"] + sold_raw, p["sold_usd"] + usd
         closed = sold_total >= p["raw"] or sold_raw == 0
-        upd = {"sold_raw": sold_total, "sold_usd": sold_usd, "exit_pending": 0, "last_ref": ref}
+        upd = {"sold_raw": sold_total, "sold_usd": sold_usd, "exit_pending": 0, "pending_kind": None, "last_ref": ref}
         if not closed:
             self.journal.update_position(p["id"], **upd)
             if p["book"] == "real":
@@ -818,21 +948,27 @@ class Desk:
         return True
 
     # ---------------------------------------------------------------- equity and hard limits
-    def equity(self) -> float:
-        value = 0.0
-        for p in self.journal.open_positions(self.mode):
-            value += (p["raw"] - p["sold_raw"]) / 10 ** p["decimals"] * self._value_price(p["mint"], p["entry_price"])
-        return self.broker.usdc() + value
+    def equity(self, cash: float | None = None) -> float:
+        """USDC + open coins at their value + buys sent but not yet booked (their USDC has left, their coins aren't
+        in the journal yet: without this a buy in flight reads as a loss and can fire a limit)."""
+        if cash is None:
+            cash = self.broker.usdc()
+        with self.lock:
+            value = sum((p["raw"] - p["sold_raw"]) / 10 ** p["decimals"] * self._value_price(p["mint"], p["entry_price"])
+                        for p in self.journal.open_positions(self.mode))
+            value += sum(r["usd"] for r in self.journal.pending(self.mode) if r["side"] == "buy")
+        return cash + value
 
     def mark(self) -> None:
         now, r = self.clock(), self.cfg.risk
+        try:
+            cash = self.broker.usdc()  # the wallet read happens outside the lock
+            self._api_ok("wallet")
+        except Exception as e:
+            return self._api_error(f"wallet: {type(e).__name__}: {e}", "wallet")
         trip_reason = None
         with self.lock:
-            try:
-                eq = self.equity()
-                self._api_ok("wallet")
-            except Exception as e:
-                return self._api_error(f"wallet: {type(e).__name__}: {e}", "wallet")
+            eq = self.equity(cash)
             self.equity_now = eq
             self.journal.put(f"equity:{self.mode}", eq)
             self.journal.equity(self.mode, now, eq)
@@ -842,28 +978,32 @@ class Desk:
             peak = max(float(self.journal.get(f"peak:{self.mode}") or eq), eq)
             self.journal.put(f"peak:{self.mode}", peak)
             day = day_of(now)
-            if self.journal.get(f"day:{self.mode}") != day:
+            if self.journal.get(f"day:{self.mode}") != day or self.journal.get(f"day_start:{self.mode}") is None:
                 self.journal.put(f"day:{self.mode}", day)
                 self.journal.put(f"day_start:{self.mode}", eq)
             day_start = float(self.journal.get(f"day_start:{self.mode}") or eq)
-            if self.api_errors and not self.kill.tripped and not self.journal.get(f"api_errors:{self.mode}"):
-                self.errors = {k: 0 for k in self.errors}  # ./desk.sh reset cleared the streak
-            if self.kill.tripped:
-                return
-            if peak > 0 and (peak - eq) / peak * 100 >= r.max_drawdown_pct:
-                trip_reason = f"equity fell {(peak - eq) / peak:.0%} from its high (limit {r.max_drawdown_pct:g}%)"
-            elif day_start > 0 and (day_start - eq) / day_start * 100 >= r.daily_loss_limit_pct and self.journal.get(f"daily_stop:{self.mode}") != day:
-                self.journal.put(f"daily_stop:{self.mode}", day)
-                self._feed("STOP", "CHIEF", f"down {(day_start - eq) / day_start:.0%} today: no new buys until 00:00 UTC", alert=True)
+            reset_at = self.journal.get(f"reset_at:{self.mode}")
+            if reset_at != self._reset_seen:  # ./desk.sh reset while running: forget the streaks it cleared
+                self._reset_seen = reset_at
+                self.errors = {}
+                self._save_errors()
+            if not self.kill.tripped:
+                if peak > 0 and (peak - eq) / peak * 100 >= r.max_drawdown_pct:
+                    trip_reason = f"equity fell {(peak - eq) / peak:.0%} from its high (limit {r.max_drawdown_pct:g}%)"
+                elif day_start > 0 and (day_start - eq) / day_start * 100 >= r.daily_loss_limit_pct and self.journal.get(f"daily_stop:{self.mode}") != day:
+                    self.journal.put(f"daily_stop:{self.mode}", day)
+                    self._feed("STOP", "CHIEF", f"down {(day_start - eq) / day_start:.0%} today: no new buys until 00:00 UTC", alert=True)
         if trip_reason:
-            return self.trip(trip_reason)
+            self.trip(trip_reason)
+        self._settle_pending()
         if self.mode == "live":
             self._reconcile()
 
     def _reconcile(self) -> None:
         """Live: does the wallet still hold what the journal says? Tokens can leave outside the bot (a manual sell in
         Phantom). Only a shortfall seen on several reads in a row counts, and never on a buy that just landed (RPC
-        balances lag), and the missing tokens are booked as an exit for nothing, so the loss shows in the P&L."""
+        balances lag) or a position with a sell in flight or being settled, and the missing tokens are booked as an
+        exit for nothing, so the loss shows in the P&L."""
         try:
             self.sol_now = self.broker.sol()
             held = self.broker.holdings()
@@ -871,9 +1011,11 @@ class Desk:
             return self._api_error(f"wallet: {e}", "wallet")
         now = self.clock()
         with self.lock:
+            settling = {r["position_id"] for r in self.journal.pending(self.mode) if r["position_id"]}
             for p in self.journal.open_positions(self.mode):
                 have, want = held.get(p["mint"], 0), p["raw"] - p["sold_raw"]
-                if p["id"] in self._inflight or now - p["opened_t"] < RECONCILE_GRACE_SECONDS or have >= want * 0.95:
+                if (p["id"] in self._inflight or p["id"] in self._queued or p["id"] in settling
+                        or now - p["opened_t"] < RECONCILE_GRACE_SECONDS or have >= want * 0.95):
                     self._short_reads.pop(p["id"], None)
                     continue
                 n = self._short_reads[p["id"]] = self._short_reads.get(p["id"], 0) + 1
@@ -894,7 +1036,7 @@ class Desk:
         with self.lock:
             opens = self.journal.open_positions(self.mode)
         for p in opens:
-            self._sell(p, 1.0, "kill", "kill switch")
+            self._dispatch_sell(p, 1.0, "kill", "kill switch")
 
     # ================================================================ dashboard
     def dashboard_state(self) -> dict:
@@ -903,10 +1045,7 @@ class Desk:
         day = day_of(now)
         start = float(j.get(f"start:{mode}") or self.equity_now or 0)
         start_t = float(j.get(f"start_t:{mode}") or now)
-        curve = [(r["t"], r["v"]) for r in j.equity_curve(mode)]
-        if len(curve) > 600:
-            k = len(curve) / 600
-            curve = [curve[int(i * k)] for i in range(600)] + [curve[-1]]
+        curve = [(r["t"], r["v"]) for r in j.equity_curve(mode, points=600)]
         real_closed, shadow_closed = j.closed_positions(mode, "real"), j.closed_positions(mode, "shadow")
         by_station: dict[str, dict] = {}
         for p in real_closed:

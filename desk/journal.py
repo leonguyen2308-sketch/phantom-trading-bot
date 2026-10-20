@@ -3,6 +3,9 @@
 positions: real buys (book='real') and SHADOW positions (book='shadow'): every token that passed all the
 code gates gets a shadow position with the same exit plan, whether or not the Claude desk approved it. Real vs
 shadow is the running test of whether the desk adds anything over rules alone.
+
+pending: a swap written down BEFORE it is sent and crossed off once its outcome is known, so a crash, a restart or
+an unknown outcome never leaves a coin the bot bought but doesn't know about (or a sale it can't account for).
 """
 
 from __future__ import annotations
@@ -22,8 +25,11 @@ CREATE TABLE IF NOT EXISTS positions (
   id INTEGER PRIMARY KEY, mode TEXT, book TEXT, mint TEXT, symbol TEXT, decimals INTEGER, station TEXT, pool TEXT,
   opened_t INTEGER, cost_usd REAL, raw INTEGER, entry_price REAL, plan TEXT,
   sold_raw INTEGER DEFAULT 0, sold_usd REAL DEFAULT 0, exit_pending REAL DEFAULT 0,
-  closed_t INTEGER, pnl REAL, exit_kind TEXT, decision_id INTEGER, buy_ref TEXT, last_ref TEXT, source_wallet TEXT
+  closed_t INTEGER, pnl REAL, exit_kind TEXT, decision_id INTEGER, buy_ref TEXT, last_ref TEXT, source_wallet TEXT,
+  pending_kind TEXT, exit_cost REAL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY, mode TEXT, side TEXT, mint TEXT, position_id INTEGER, raw INTEGER,
+  usd REAL, t REAL, info TEXT);
 CREATE TABLE IF NOT EXISTS exits (id INTEGER PRIMARY KEY, mode TEXT, book TEXT, position_id INTEGER, t INTEGER,
   kind TEXT, raw INTEGER, usd REAL, cost_share REAL, ref TEXT);
 CREATE TABLE IF NOT EXISTS decisions (
@@ -59,6 +65,11 @@ class Journal:
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(positions)")}
+        for col, decl in (("pending_kind", "TEXT"), ("exit_cost", "REAL DEFAULT 0")):  # journals from earlier versions
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE positions ADD COLUMN {col} {decl}")
+        self.db.commit()
 
     # ---- key/value ----
     @_locked
@@ -181,8 +192,31 @@ class Journal:
         self.db.commit()
 
     @_locked
-    def equity_curve(self, mode: str) -> list[sqlite3.Row]:
-        return self.db.execute("SELECT t, v FROM equity WHERE mode=? ORDER BY t", (mode,)).fetchall()
+    def equity_curve(self, mode: str, points: int | None = None) -> list[sqlite3.Row]:
+        """The whole curve, or about `points` evenly spaced rows of it plus the latest (one row is written every 15 s)."""
+        if not points:
+            return self.db.execute("SELECT t, v FROM equity WHERE mode=? ORDER BY t", (mode,)).fetchall()
+        n = self.db.execute("SELECT COUNT(*) AS n FROM equity WHERE mode=?", (mode,)).fetchone()["n"]
+        step = max(1, n // points)
+        return self.db.execute("SELECT t, v FROM (SELECT t, v, ROW_NUMBER() OVER (ORDER BY t) AS i FROM equity WHERE mode=?) "
+                               "WHERE (i - 1) % ? = 0 OR i = ? ORDER BY t", (mode, step, n)).fetchall()
+
+    # ---- swaps whose outcome isn't known yet ----
+    @_locked
+    def add_pending(self, mode: str, side: str, mint: str, position_id: int | None, raw: int, usd: float, t: float, info: dict) -> int:
+        cur = self.db.execute("INSERT INTO pending(mode, side, mint, position_id, raw, usd, t, info) VALUES(?,?,?,?,?,?,?,?)",
+                              (mode, side, mint, position_id, int(raw), float(usd), float(t), json.dumps(info)))
+        self.db.commit()
+        return cur.lastrowid
+
+    @_locked
+    def pending(self, mode: str) -> list[sqlite3.Row]:
+        return self.db.execute("SELECT * FROM pending WHERE mode=? ORDER BY id", (mode,)).fetchall()
+
+    @_locked
+    def drop_pending(self, pid: int) -> None:
+        self.db.execute("DELETE FROM pending WHERE id=?", (pid,))
+        self.db.commit()
 
     @_locked
     def conviction_outcomes(self, mode: str) -> list[sqlite3.Row]:

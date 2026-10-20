@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -72,11 +73,12 @@ def real_sources(cfg):
     from fomo.market import Prices
     http = LimitedClient()
     mhttp = LimitedClient(share=http, max_wait=2.0)
+    bhttp = LimitedClient(share=http, max_wait=5.0)  # quotes and swaps: a stop's sell never waits 30 s on a 429
     rpc = SolanaRpc(os.environ["SOLANA_RPC_URL"])
     key = os.environ.get("JUPITER_API_KEY", "")
     return {"http": http, "rpc": rpc, "jup": JupiterTokens(key, http), "dex": DexScreener(http), "gecko": GeckoTerminal(http),
             "rug": RugCheck(http), "holders": Holders(rpc), "mint_info": rpc.mint_info, "prices": Prices(key, mhttp, max_age=30),
-            "mdex": DexScreener(mhttp)}
+            "mdex": DexScreener(mhttp), "bhttp": bhttp}
 
 
 # ---------------------------------------------------------------- run
@@ -107,7 +109,8 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
     else:
         need("SOLANA_RPC_URL", "JUPITER_API_KEY")
         src = real_sources(cfg)
-        journal, kill = Journal(STATE / "desk.sqlite"), KillSwitch(STATE / "desk_kill.json")
+        journal, kill = Journal(STATE / "desk.sqlite"), KillSwitch(STATE / f"desk_{mode}_kill.json")  # paper's limits never sell live
+        sell_only = None
         if mode == "live":
             from desk.golive import go_live_report
             approved = STATE / "desk_approved.sha256"
@@ -116,20 +119,21 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
             report = go_live_report(STATE, CONFIG)
             print(report.text())
             if not report.ok:
-                if not journal.open_positions("live"):
+                if not journal.open_positions("live") and not journal.pending("live"):
                     sys.exit(1)
+                sell_only = "go-live checks no longer pass: selling what is open, buying nothing"  # a reset can't lift it
                 kill.trip("Go-live checks no longer pass while live positions are open; selling them")
             from fomo.brokers import LiveBroker
             kp = load_keypair()
-            broker = LiveBroker(kp, os.environ["JUPITER_API_KEY"], src["rpc"], http=src["http"])
+            broker = LiveBroker(kp, os.environ["JUPITER_API_KEY"], src["rpc"], http=src["bhttp"])
             log.info("LIVE from bot wallet %s", kp.pubkey())
         else:
             from fomo.brokers import PaperBroker
             start = float(os.environ.get("DESK_PAPER_START_USD", "100"))
-            broker = PaperBroker(STATE / "desk_paper.json", os.environ["JUPITER_API_KEY"], start, cfg.paper.slippage_bps, http=src["http"])
+            broker = PaperBroker(STATE / "desk_paper.json", os.environ["JUPITER_API_KEY"], start, cfg.paper.slippage_bps, http=src["bhttp"])
         if cfg.desk.enabled and os.environ.get("ANTHROPIC_API_KEY"):
             from desk.ai import ClaudeDesk
-            brain = ClaudeDesk(cfg.desk, journal)
+            brain = ClaudeDesk(cfg.desk, journal, mode=mode)
         else:
             from desk.ai import DeskUnavailable
 
@@ -151,6 +155,7 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
         bot = Desk(mode=mode, cfg=cfg, broker=broker, jup=src["jup"], dex=src["dex"], gecko=src["gecko"], rug=src["rug"],
                    holders=src["holders"], mint_info=src["mint_info"], prices=src["prices"], desk=brain, journal=journal, kill=kill,
                    watcher=watcher, tracked=tracked, mdex=src["mdex"])
+        bot.sell_only = sell_only
 
     if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID") and mode != "demo":
         from phantom.alerts import Telegram
@@ -171,9 +176,21 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
 
     serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r, sell=False), bot.lock, page=PAGE), port)
     log.info("Dashboard: http://localhost:%d", port)
+    stopping = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stopping.set())  # launchctl unload: finish the swaps in flight first
     bot.start()
     last_cfg_check = 0.0
+    drain_until = None
     while True:
+        if stopping.is_set():
+            if drain_until is None:
+                log.info("Stopping: no new buys; waiting for swaps in flight")
+                bot.draining = True
+                bot.stop()
+                drain_until = time.monotonic() + 120
+            if not bot.busy() or time.monotonic() > drain_until:
+                log.info("Stopped.")
+                return
         if mode == "demo":
             market.advance()
         if mode == "live" and time.monotonic() - last_cfg_check > 15:
@@ -323,17 +340,23 @@ def cmd_golive_check() -> None:
 def cmd_kill(reset: bool) -> None:
     from desk.journal import Journal
     from phantom.risk import KillSwitch
-    ks = KillSwitch(STATE / "desk_kill.json")
+    switches = {m: KillSwitch(STATE / f"desk_{m}_kill.json") for m in ("paper", "live")}
     if not reset:
-        ks.trip("Command line: ./desk.sh kill")
-        print("Kill switch ON. The running desk sells everything and stops buying within seconds.")
+        for ks in switches.values():
+            ks.trip("Command line: ./desk.sh kill")
+        print("Kill switch ON (paper and live). The running desk sells everything and stops buying within seconds.")
         return
-    print(f"Kill switch is {'ON: ' + ks.reason if ks.tripped else 'off'}.")
-    ks.reset(input("Type RESET to allow trading again: ").strip())
+    for m, ks in switches.items():
+        print(f"{m}: kill switch is {'ON: ' + ks.reason if ks.tripped else 'off'}.")
+    answer = input("Type RESET to allow trading again: ").strip()
+    for ks in switches.values():
+        ks.reset(answer)
     j = Journal(STATE / "desk.sqlite")
-    for m in ("paper", "live"):  # fresh error count and high-water mark, or the old ones re-trip it at once
+    for m in ("paper", "live"):  # fresh error counts and baselines, or the old ones re-trip it at once
         j.put(f"api_errors:{m}", 0)
-        j.put(f"peak:{m}", None)
+        j.put(f"reset_at:{m}", time.time())  # a running desk reads this and forgets its streaks too
+        for k in ("peak", "day_start", "start"):  # after a withdrawal, the new balance is the baseline
+            j.put(f"{k}:{m}", None)
     print("Kill switch reset. Restart the desk (scripts/install-desk-service.sh, or ./desk.sh paper|live).")
 
 
