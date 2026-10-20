@@ -689,3 +689,60 @@ def test_one_stuck_sell_does_not_hold_up_the_other_stops(tmp_path):
     release.set()
     d._pool.shutdown(wait=True)
     assert len(d.journal.closed_positions("paper")) == 2 and not d.busy()
+
+
+def test_a_dump_during_the_desk_review_cancels_the_buy(tmp_path):
+    class DumpingDesk(FakeDesk):
+        def review(self, *a, **k):
+            w.price[GOOD] *= 0.4  # the creator sells into the pool while the desk thinks
+            return super().review(*a, **k)
+    d, w, clock = make(tmp_path, desk=DumpingDesk())
+    only_good(w)
+    assert d.evaluate(GOOD, "scout", w.jt(GOOD), w.tokens([GOOD])[GOOD], {}) == "ran"
+    assert d.journal.open_positions("paper") == []
+
+
+def test_the_requote_must_pass_the_depth_gate_again(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    real = d.broker.quote_buy
+    calls = []
+
+    def quote_buy(mint, usd):
+        q = real(mint, usd)
+        calls.append(1)
+        return q if len(calls) == 1 else Quote(q.side, q.mint, q.usd, q.raw, int(q.raw * 0.7), 40.0)  # 40% impact now
+    d.broker.quote_buy = quote_buy
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+
+
+def test_rules_only_never_buys_just_because_the_desk_is_busy(tmp_path):
+    cfg = load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, desk=dataclasses.replace(cfg.desk, when_unavailable="rules_only", max_reviews_per_hour=1))
+    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(verdict="block"))
+    d.sweep()  # GOOD and BAD both pass the gates: the desk reviews (and blocks) one, the other finds the desk busy
+    assert d.desk.calls == 1 and d.journal.open_positions("paper") == []
+
+
+def test_one_coin_the_node_cant_read_is_set_aside_not_counted_until_the_kill_switch(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+
+    def broken(mint):
+        raise RuntimeError("Solana RPC getAccountInfo failed: not a token mint")
+    d.mint_info_fn = broken
+    for _ in range(15):
+        clock.t += 61
+        d.step()
+    assert not d.kill.tripped and d.errors.get("rpc", 0) <= 1
+
+
+def test_mint_info_with_an_authority_is_read_again_on_the_next_look(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    w.mint_auth.add(GOOD)
+    assert d._mint_info(GOOD).mint_authority
+    w.mint_auth.discard(GOOD)  # the creator revoked it
+    assert d._mint_info(GOOD).mint_authority is None
+    assert d._mint_info(GOOD) is d._mint_info(GOOD)  # revoked for good: cached

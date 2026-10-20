@@ -19,7 +19,6 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
 
 from desk import funnel
 from desk.ai import DeskUnavailable, sanitize_symbol
@@ -184,9 +183,14 @@ class Desk:
             self._cool[mint] = self.clock() + self.cfg.scan.recheck_killed_minutes * 60
 
     def _mint_info(self, mint: str):
-        if mint not in self._mints:
-            self._mints[mint] = self.mint_info_fn(mint)
-        return self._mints[mint]
+        """Cached only once both authorities are revoked (that can't be undone); otherwise read again on every look,
+        so a coin whose creator revokes them later isn't killed on a stale answer."""
+        if mint in self._mints:
+            return self._mints[mint]
+        info = self.mint_info_fn(mint)
+        if not info.mint_authority and not info.freeze_authority:
+            self._mints[mint] = info
+        return info
 
     # ================================================================ the scanner
     def start(self) -> None:
@@ -358,7 +362,8 @@ class Desk:
             top = self.holders.top(mint, pools=(dx or {}).get("_pair_addresses") or ())
             fresh, _ = self.holders.fresh_share(top, cfg.holders.fresh_wallet_hours) if top else (None, 0)
             self._api_ok("rpc")
-        except Exception as e:
+        except Exception as e:  # set aside for a while: one coin the node can't read must not build an error streak alone
+            self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
             self._api_error(f"RPC: {type(e).__name__}: {e}", "rpc")
             return "error"
         rug = self.rug.summary(mint)
@@ -430,12 +435,12 @@ class Desk:
                                     f"liq ${(snap.get('liquidity_usd') or 0) / 1e3:.0f}K · stop -{plan.stop_pct:.0f}%")
 
         # the desk
-        opinion, desk_note = None, ""
+        opinion, desk_note, busy = None, "", False
         self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
         while self._reviews and self._reviews[0] < now - 3600:
             self._reviews.popleft()
         if len(self._reviews) >= cfg.desk.max_reviews_per_hour:
-            desk_note = f"desk busy ({cfg.desk.max_reviews_per_hour} reviews this hour)"
+            desk_note, busy = f"desk busy ({cfg.desk.max_reviews_per_hour} reviews this hour)", True
         else:
             self._reviews.append(now)
             links = [w.get("url") for w in ((dx or {}).get("info") or {}).get("websites") or [] if isinstance(w, dict)]
@@ -458,7 +463,7 @@ class Desk:
         reasons: list[str] = []
         mult = 1.0
         if opinion is None:
-            if cfg.desk.when_unavailable == "rules_only":
+            if cfg.desk.when_unavailable == "rules_only" and not busy:  # rules alone only when the desk is really down
                 desk_note = (desk_note + " · trading on rules alone").strip(" ·")
             else:
                 reasons.append(f"no desk opinion ({desk_note or 'unavailable'})")
@@ -503,9 +508,20 @@ class Desk:
             return "error"
         price = q.usd / (q.raw / 10 ** decimals) if q.raw else 0.0
         moved = (price / decided_price - 1) * 100 if decided_price else 0.0
-        if moved > self.cfg.depth.max_requote_move_pct:
-            self._feed("SKIP", "CHIEF", f"${symbol}: price ran {moved:.0f}% while the desk was deciding")
+        if abs(moved) > self.cfg.depth.max_requote_move_pct:  # up: chasing; down: someone is dumping into the pool
+            self._feed("SKIP", "CHIEF", f"${symbol}: price {'ran' if moved > 0 else 'fell'} {abs(moved):.0f}% while the desk was deciding")
             return "ran"
+        try:
+            back = self.broker.quote_sell(mint, q.raw)
+        except ValueError:
+            back = None
+        except Exception as e:
+            self._feed("SKIP", "CHIEF", f"${symbol}: re-quote failed ({type(e).__name__})")
+            return "error"
+        _, why = funnel.g3_depth(q, back, decimals, self.cfg.depth)  # the depth gate again, on the quote we would send
+        if why:
+            self._feed("SKIP", "CHIEF", f"${symbol}: at the re-quote, {'; '.join(why[:2])}")
+            return "depth"
         info = {"symbol": symbol, "decimals": decimals, "station": station, "pool": pool, "decided_price": decided_price,
                 "atr": atr, "vol5": vol5, "did": did, "source_wallet": source_wallet}
         with self.lock:  # last look, right before the money moves: the kill switch or a limit may have fired meanwhile
