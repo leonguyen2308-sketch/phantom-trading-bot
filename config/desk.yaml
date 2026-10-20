@@ -54,7 +54,8 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
   effort_skeptic: medium
   news: false                   # web search per finalist: better red-flag checks, costs more
   max_tokens: 8000
-  daily_budget_usd: 3.0         # the desk stops (and the bot skips trades) after this much AI spend a day
+  daily_budget_usd: 3.0         # the desk stops (and the bot skips trades) after this much AI spend a day, per mode
+                                # (a paper run alongside live has its own; ./desk.sh desk-test counts as paper)
   max_reviews_per_hour: 8
   min_conviction: 0.6
   allowed_setups: [organic_trend, early_breakout]

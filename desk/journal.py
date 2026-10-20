@@ -219,6 +219,11 @@ class Journal:
         self.db.commit()
 
     @_locked
+    def desk_reviewed(self, mode: str) -> set[int]:
+        """Decision ids the Claude desk actually gave an opinion on (not 'unavailable', not 'busy')."""
+        return {r["id"] for r in self.db.execute("SELECT id FROM decisions WHERE mode=? AND verdict IS NOT NULL", (mode,))}
+
+    @_locked
     def conviction_outcomes(self, mode: str) -> list[sqlite3.Row]:
         """Each desk conviction next to how its shadow (rules-only) position ended: is the confidence worth anything?"""
         return self.db.execute("SELECT d.conviction AS c, p.pnl AS pnl, d.action AS action FROM decisions d JOIN positions p "

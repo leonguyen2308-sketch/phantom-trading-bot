@@ -106,6 +106,8 @@ def g2_unknowns(h: dict, rug: dict | None) -> list[str]:
         why.append("RugCheck unavailable (unknown is not a pass)")
     if h.get("top10_pct") is None:
         why.append("top holders unknown")
+    elif h.get("fresh_share_pct") is None:
+        why.append("holder wallet ages unknown")
     return why
 
 
@@ -115,7 +117,9 @@ def g3_depth(buy, sell, decimals: int, d) -> tuple[dict, list[str]]:
     why = []
     if buy.impact_pct > d.max_price_impact_pct:
         why.append(f"price impact {buy.impact_pct:.1f}%")
-    if buy.min_out and buy.raw:
+    if not buy.min_out or not buy.raw:
+        why.append("quote's slippage tolerance unknown")
+    else:
         tol = (1 - buy.min_out / buy.raw) * 100
         if tol > d.max_slippage_tolerance_pct:
             why.append(f"quote allows {tol:.1f}% slippage (sandwich bait)")

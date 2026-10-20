@@ -18,6 +18,7 @@ from phantom.config import file_sha256
 MIN_PAPER_HOURS = 72
 MIN_PAPER_TRADES = 30
 MIN_SHADOW_TRADES = 10
+RUNNING_GAP_SECONDS = 60
 
 BLOW_UP_RISKS = [
     "About 74% of Solana memecoin buyers end with less money than they started (Bitquery, 2.9M buyers), and 1% of "
@@ -75,16 +76,22 @@ def go_live_report(state: Path, config: Path) -> Report:
         desk_on = True  # can't tell: judge it the stricter way
     j = Journal(state / "desk.sqlite")
     curve = j.equity_curve("paper")
-    hours = (curve[-1]["t"] - curve[0]["t"]) / 3600 if len(curve) > 1 else 0.0
+    # time the desk was actually running: gaps between marks (one every 15 s) longer than a minute were downtime
+    hours = sum(g for g in (b["t"] - a["t"] for a, b in zip(curve, curve[1:])) if 0 < g <= RUNNING_GAP_SECONDS) / 3600
     real_rows, shadow_rows = j.closed_positions("paper", "real"), j.closed_positions("paper", "shadow")
+    if desk_on:  # only trades the desk really reviewed show what the desk does; ones bought 'on rules alone' don't
+        reviewed = j.desk_reviewed("paper")
+        real_rows = [r for r in real_rows if r["decision_id"] in reviewed]
     rows = real_rows if desk_on else shadow_rows  # with the desk off, the bot trades exactly what the shadow book did
     st, sh = trade_stats(rows), trade_stats(shadow_rows)
     n = st.get("n", 0)
     checks.append(Check("paper long enough", hours >= MIN_PAPER_HOURS and n >= MIN_PAPER_TRADES,
-                        f"{hours:.0f}h and {n} closed trades on paper (need {MIN_PAPER_HOURS}h and {MIN_PAPER_TRADES})"))
+                        f"{hours:.0f}h running and {n} closed trades{' the desk reviewed' if desk_on else ''} on paper "
+                        f"(need {MIN_PAPER_HOURS}h and {MIN_PAPER_TRADES})"))
     ai = 0.0
     if desk_on and len(curve) > 1:
-        days = {day_of(curve[0]["t"] + i * 86400) for i in range(int(hours // 24) + 1)} | {day_of(curve[-1]["t"])}
+        span_days = int((curve[-1]["t"] - curve[0]["t"]) // 86400)
+        days = {day_of(curve[0]["t"] + i * 86400) for i in range(span_days + 1)} | {day_of(curve[-1]["t"])}
         ai = sum(float(v or 0) for k, v in j.get_prefix("ai_spend:paper:").items() if k.split(":", 2)[2] in days)
     pnl = st.get("pnl_usd", 0.0) - ai
     checks.append(Check("paper made money", n >= MIN_PAPER_TRADES and pnl > 0,

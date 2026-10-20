@@ -242,7 +242,7 @@ def test_g2_onchain():
     danger = {"risks": [{"name": "Large Amount of LP Unlocked", "level": "danger"}, {"name": "Mutable metadata", "level": "warn"}]}
     assert funnel.g2_onchain(clean, {"top1_pct": 3, "top10_pct": 20, "rugcheck_risk": 20}, danger, CFG.holders) == [
         "RugCheck: Large Amount of LP Unlocked"]
-    assert funnel.g2_unknowns({"top10_pct": 20, "rugcheck_risk": 20}, {}) == []
+    assert funnel.g2_unknowns({"top10_pct": 20, "rugcheck_risk": 20, "fresh_share_pct": 1}, {}) == []
     assert len(funnel.g2_unknowns({"top10_pct": None, "rugcheck_risk": None}, None)) == 2
 
 
@@ -276,8 +276,8 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     (tmp_path / "desk_approved.sha256").write_text(file_sha256(cfg))
     (tmp_path / "desk_ack_risks.json").write_text(json.dumps({"count": len(golive.BLOW_UP_RISKS)}))
     j = Journal(tmp_path / "desk.sqlite")
-    j.equity("paper", 0, 100)
-    j.equity("paper", 80 * 3600, 105)
+    for t in range(0, 80 * 3600 + 1, 60):  # 80 h of marks, a minute apart
+        j.equity("paper", t, 100)
     closed(j, "real", 30, 0.2)  # +6.7%/trade
     closed(j, "shadow", 20, 0.1)  # rules-only: +3.3%/trade
     j.put("ai_spend:paper:1970-01-01", 2.0)
@@ -300,10 +300,11 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     assert not golive.go_live_report(tmp_path, cfg).ok  # any change to the rules needs a new approval
 
 
-def closed(j, book, n, pnl):
+def closed(j, book, n, pnl, reviewed=True):
     for i in range(n):
+        did = j.decision(mode="paper", t=i, mint=f"M{i}", verdict="no_objection" if reviewed else None, action="buy")
         j.open_position(mode="paper", book=book, mint=f"M{i}", symbol="X", decimals=6, station="scout", opened_t=i, cost_usd=3.0,
-                        raw=1, entry_price=1.0, plan={}, closed_t=i + 600, pnl=pnl)
+                        raw=1, entry_price=1.0, plan={}, closed_t=i + 600, pnl=pnl, decision_id=did)
 
 
 def test_golive_refuses_a_losing_paper_record(tmp_path, monkeypatch):
@@ -321,3 +322,27 @@ def test_golive_with_the_desk_off_judges_the_rules_only_book(tmp_path):
     closed(j, "shadow", 30, -0.1)
     checks = {c.name: c for c in golive.go_live_report(tmp_path, cfg).checks}
     assert checks["desk beats rules-only"].ok and not checks["paper made money"].ok
+
+
+def test_golive_counts_running_time_and_only_trades_the_desk_reviewed(tmp_path):
+    j = Journal(tmp_path / "desk.sqlite")
+    for t in list(range(0, 3600, 15)) + list(range(80 * 3600, 81 * 3600, 15)):  # 1 h, a 3-day gap, 1 h
+        j.equity("paper", t, 100)
+    closed(j, "real", 40, 0.2, reviewed=False)  # bought 'on rules alone' while the desk was down
+    checks = {c.name: c for c in golive.go_live_report(tmp_path, tmp_path / "none.yaml").checks}
+    assert not checks["paper long enough"].ok and checks["paper long enough"].detail.startswith("2h running and 0 closed")
+
+
+def test_fresh_share_counts_a_wallet_with_no_history_and_an_unknown_age_is_unknown():
+    a, b, c = (str(Keypair().pubkey()) for _ in range(3))
+    now = 1_000_000
+    rpc = FakeRpc([], sigs={a: [], b: [{"blockTime": now - 90 * 3600}], c: [{"blockTime": None}]})
+    h = Holders(rpc, clock=lambda: now)
+    assert h.fresh_share([(a, 7.0), (b, 6.0)], hours=48) == (7.0, 2)
+    assert h.fresh_share([(a, 7.0), (c, 5.0)], hours=48)[0] is None
+    assert funnel.g2_unknowns({"top10_pct": 20, "rugcheck_risk": 10, "fresh_share_pct": None}, {}) == ["holder wallet ages unknown"]
+
+
+def test_g3_an_unknown_slippage_tolerance_is_a_kill():
+    _, why = funnel.g3_depth(Quote("buy", "M", 10.0, 1000, 0, 0.5), Quote("sell", "M", 9.9, 1000, 0, 0.5), 6, CFG.depth)
+    assert why == ["quote's slippage tolerance unknown"]

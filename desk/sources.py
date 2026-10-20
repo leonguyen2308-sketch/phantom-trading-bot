@@ -250,15 +250,25 @@ class Holders:
                 out[owner] = out.get(owner, 0.0) + amount / total * 100
         return sorted(out.items(), key=lambda kv: -kv[1])
 
-    def fresh_share(self, holders: list[tuple[str, float]], hours: float, check: int = 10) -> tuple[float, int]:
+    def fresh_share(self, holders: list[tuple[str, float]], hours: float, check: int = 10) -> tuple[float | None, int]:
         """Share of supply (in %) held by wallets whose whole history is younger than `hours`, among the top `check`.
 
         One getSignaturesForAddress per wallet: if fewer than 100 signatures come back and the oldest is recent,
-        the wallet's entire life fits in the window. Returns (share %, wallets checked)."""
+        the wallet's entire life fits in the window. A wallet with no history at all is as fresh as it gets. If the
+        oldest signature has no block time, its age can't be told: the share is None (unknown, never a pass).
+        Returns (share %, wallets checked)."""
         cutoff, share, n = self.clock() - hours * 3600, 0.0, 0
         for owner, pct in holders[:check]:
             sigs = self.rpc.call("getSignaturesForAddress", [owner, {"limit": 100, "commitment": "confirmed"}])
             n += 1
-            if len(sigs) < 100 and sigs and (sigs[-1].get("blockTime") or 0) >= cutoff:
+            if len(sigs) >= 100:
+                continue
+            if not sigs:
+                share += pct
+                continue
+            oldest = sigs[-1].get("blockTime")
+            if oldest is None:
+                return None, n
+            if oldest >= cutoff:
                 share += pct
         return share, n

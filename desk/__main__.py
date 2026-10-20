@@ -272,7 +272,9 @@ def cmd_desk_test() -> None:
             "book_pct": 300, "round_trip_cost_pct": 2.0, "max_hold_hours": 24}
     print(f"Asking {cfg.desk.model} to review a made-up token (analyst + skeptic{' + news' if cfg.desk.news else ''})...")
     try:
-        o = ClaudeDesk(cfg.desk).review(LEGEND, snap, plan, symbol="TEST", mint="So11111111111111111111111111111111111111112")
+        from desk.journal import Journal
+        o = ClaudeDesk(cfg.desk, Journal(STATE / "desk.sqlite"), mode="paper").review(
+            LEGEND, snap, plan, symbol="TEST", mint="So11111111111111111111111111111111111111112")
     except DeskUnavailable as e:
         sys.exit(f"Desk unavailable: {e}")
     print(json.dumps(o.to_dict(), indent=1))

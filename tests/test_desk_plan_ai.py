@@ -106,6 +106,9 @@ class Cfg:
     price_out_per_mtok: float = 20.0
     web_search_usd_per_call: float = 0.01
     max_tokens: int = 8000
+    allowed_setups: tuple = ("organic_trend", "early_breakout")
+    allowed_windows: tuple = ("early", "running")
+    min_conviction: float = 0.6
 
 
 def resp(obj, stop="end_turn", inp=2000, out=500, model=OPUS, content=None, cw=0, cr=0, searches=0, iterations=None,
@@ -302,8 +305,7 @@ def _conn_err():
     return anthropic.APIConnectionError(request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
 
 
-@pytest.mark.parametrize("answer,paid", [(resp(NEWS_OK, stop="refusal"), 3), (resp("not json"), 3), (resp(NEWS_OK, stop="max_tokens"), 3),
-                                         (resp({"red_flags": "rug", "summary": ""}), 3), (_conn_err(), 2)])
+@pytest.mark.parametrize("answer,paid", [(resp(NEWS_OK, stop="refusal"), 3), (resp(NEWS_OK, stop="max_tokens"), 3), (_conn_err(), 2)])
 def test_a_failed_news_check_is_no_information_but_is_paid_for(answer, paid):
     d = ClaudeDesk(Cfg(news=True), client=FakeClient(resp(ANALYST), resp(SKEPTIC), answer))
     o = d.review({}, {}, {}, mint=MINT)
@@ -353,3 +355,48 @@ def test_a_news_answer_split_by_citations_is_read_whole_and_its_last_lines_count
     c = FakeClient(resp(ANALYST), resp(SKEPTIC), resp("", content=blocks, searches=1))
     o = ClaudeDesk(Cfg(news=True), client=c).review({}, {}, {}, mint=MINT)
     assert o.verdict == "block" and o.news_flags == ["honeypot per solsniffer.com"] and o.news.endswith("one report")
+
+
+@pytest.mark.parametrize("text", ["not in the format at all", json.dumps({"red_flags": "rug", "summary": ""})])
+def test_a_news_answer_code_cannot_read_blocks_rather_than_passes(text):
+    o = ClaudeDesk(Cfg(news=True), client=FakeClient(resp(ANALYST), resp(SKEPTIC), resp(text))).review({}, {}, {}, mint=MINT)
+    assert (o.verdict, o.size_multiplier) == ("block", 0.0) and "unreadable" in o.news
+
+
+@pytest.mark.parametrize("answer,flags", [
+    ("RED FLAGS:\n- rug pull reported (solscan.io)\n- dev dumped per x.com\nSUMMARY: two reports", ["rug pull reported (solscan.io)", "dev dumped per x.com"]),
+    ("**RED FLAGS**: honeypot reported (rugcheck.xyz)\n**SUMMARY**: one", ["honeypot reported (rugcheck.xyz)"]),
+    ("RED FLAG: honeypot per solsniffer.com", ["honeypot per solsniffer.com"]),
+    ("**RED FLAGS:** none", []),
+    ("RED FLAGS: None reported.", []),
+    ("RED FLAGS: none (little information on this new token)", []),
+    ("RED FLAGS: NONE\nSUMMARY: listed on dexscreener.com", []),
+])
+def test_news_red_flags_are_read_in_the_ways_models_write_them(answer, flags):
+    o = ClaudeDesk(Cfg(news=True), client=FakeClient(resp(ANALYST), resp(SKEPTIC), resp(answer))).review({}, {}, {}, mint=MINT)
+    assert o.news_flags == flags and o.verdict == ("block" if flags else "shrink")
+
+
+def test_a_newline_only_citation_block_keeps_the_answer_readable():
+    from types import SimpleNamespace as NS
+    blocks = [NS(type="text", text="A source says it is a honeypot"), NS(type="text", text="\n"),
+              NS(type="text", text="RED FLAGS: honeypot (rugcheck.xyz)")]
+    o = ClaudeDesk(Cfg(news=True), client=FakeClient(resp(ANALYST), resp(SKEPTIC), resp("", content=blocks))).review({}, {}, {}, mint=MINT)
+    assert o.news_flags == ["honeypot (rugcheck.xyz)"]
+
+
+@pytest.mark.parametrize("analyst", [{**ANALYST, "setup": "late_chase"}, {**ANALYST, "entry_window": "exhausted"}, {**ANALYST, "conviction": 0.1}])
+def test_an_analyst_answer_that_already_fails_the_rules_skips_the_skeptic_and_news(analyst):
+    c = FakeClient(resp(analyst))
+    o = ClaudeDesk(Cfg(news=True), client=c).review({}, {}, {}, mint=MINT)
+    assert len(c.calls) == 1 and (o.verdict, o.size_multiplier) == ("block", 0.0) and "ruled it out" in o.objection
+
+
+def test_a_shrink_always_shrinks():
+    o = ClaudeDesk(Cfg(), client=FakeClient(resp(ANALYST), resp({**SKEPTIC, "size_multiplier": 1.0}))).review({}, {}, {})
+    assert (o.verdict, o.size_multiplier) == ("shrink", 0.75)
+
+
+def test_a_config_price_below_the_list_price_never_undercounts():
+    d = ClaudeDesk(Cfg(model="claude-fable-5-1"), client=FakeClient())
+    assert d._rates("claude-fable-5-1")[:2] == (10.0, 50.0)
