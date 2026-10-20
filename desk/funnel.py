@@ -1,6 +1,8 @@
 """The funnel's gates, cheapest first. Each returns the reasons a token dies there (empty list = it passes).
 
 G1 market numbers in hand  ->  G2 on-chain facts  ->  G3 a real quote for our ticket  ->  G4 where it is in its move.
+A safety fact that can't be read is a kill, never a pass: missing data only lets a token through where the check
+is about opportunity (organic score), not about danger.
 `checks()` folds them into the six named checks the dashboard shows (liquidity depth, holder spread, volume vs
 mcap, rug signature, fresh wallets, entry window), each PASS / FAIL / ? (unknown).
 """
@@ -20,6 +22,8 @@ def _gt(v, hi):
 
 def g1_market(m: dict, dex_id: str, jt: dict | None, g) -> list[str]:
     why = []
+    if not jt:
+        why.append("no Jupiter record (audit unknown)")
     if dex_id == "pumpfun" or (m.get("liquidity_usd") or 0) <= 0:
         why.append("still on the pump.fun bonding curve or no pool")
     if m.get("age_min") is None:
@@ -36,6 +40,8 @@ def g1_market(m: dict, dex_id: str, jt: dict | None, g) -> list[str]:
     tx = (m.get("buys_1h") or 0) + (m.get("sells_1h") or 0)
     if tx < g.min_txns_1h:
         why.append(f"{tx:.0f} trades in the last hour")
+    if not m.get("sells_1h"):
+        why.append("no sells in the last hour (honeypot?)")
     if _lt(m.get("buy_sell_ratio_1h"), g.min_buy_sell_ratio_1h):
         why.append(f"sellers outnumber buyers ({m['buy_sell_ratio_1h']:.2f})")
     pc = m.get("price_change_1h_pct")
@@ -46,6 +52,8 @@ def g1_market(m: dict, dex_id: str, jt: dict | None, g) -> list[str]:
     if _lt(m.get("organic_score"), g.min_organic_score):
         why.append(f"organic score {m['organic_score']:.0f}")
     vm = m.get("vol_to_mcap_1h")
+    if vm is None:
+        why.append("hourly volume unknown")
     if _lt(vm, g.min_vol_to_mcap_1h):
         why.append("almost no trading for its size")
     if _gt(vm, g.max_vol_to_mcap_1h):
@@ -85,6 +93,19 @@ def g2_onchain(info, h: dict, rug: dict | None, r) -> list[str]:
         why.append(f"RugCheck risk {risk:.0f}")
     if rug and rug.get("rugged"):
         why.append("RugCheck marks it rugged")
+    for risk in (rug or {}).get("risks") or []:
+        if isinstance(risk, dict) and risk.get("level") == "danger":
+            why.append(f"RugCheck: {str(risk.get('name') or 'danger')[:40]}")
+    return why
+
+
+def g2_unknowns(h: dict, rug: dict | None) -> list[str]:
+    """Safety facts that could not be read. Not a verdict on the token, so it is only set aside for a while."""
+    why = []
+    if rug is None or h.get("rugcheck_risk") is None:
+        why.append("RugCheck unavailable (unknown is not a pass)")
+    if h.get("top10_pct") is None:
+        why.append("top holders unknown")
     return why
 
 
@@ -137,7 +158,7 @@ def checks(snap: dict, kills: dict[str, list[str]]) -> dict[str, str]:
                             snap.get("top10_pct") is not None),
         "volume vs mcap": st(has("market", "wash", "no trading"), snap.get("vol_to_mcap_1h") is not None),
         "rug signature": st(has("onchain", "mint", "freeze", "Token-2022", "RugCheck") or has("market", "suspicious", "mint", "freeze"),
-                            "top10_pct" in snap),
+                            snap.get("rugcheck_risk") is not None),
         "fresh wallets": st(has("onchain", "fresh"), snap.get("fresh_share_pct") is not None),
         "entry window": st(has("window", "fading", "parabolic", "candles") or has("market", "chasing", "dumping"),
                            snap.get("drop_from_high_pct") is not None),

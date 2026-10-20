@@ -8,6 +8,7 @@
 - GeckoTerminal (no key, ~10 calls/min shared by IP): 1m/5m candles, for finalists only.
 - RugCheck (no key, unpublished limits): the ~300-byte risk summary, finalists only; unavailable = unknown.
 - Solana RPC (your Helius key): top holders and how new their wallets are.
+- Jupiter Price API (fomo.market.Prices): prices for open positions, on the manager's own client.
 """
 
 from __future__ import annotations
@@ -26,6 +27,31 @@ DEXSCREENER = "https://api.dexscreener.com"
 GECKO = "https://api.geckoterminal.com/api/v2"
 RUGCHECK = "https://api.rugcheck.xyz/v1"
 BURN = "1nc1nerator11111111111111111111111111111111"
+
+# Programs whose accounts hold a token's pool reserves (the pool account owns the vault): pump.fun bonding curve,
+# PumpSwap, Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora DAMM v1 and its vault program.
+POOL_PROGRAMS = {
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+    "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo", "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB",
+    "24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi",
+}
+# Programs whose vaults are owned by one signing PDA with no account of its own: (seed, program).
+_AUTHORITY_SEEDS = [
+    (b"amm authority", "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"),  # Raydium AMM v4
+    (b"vault_and_lp_mint_auth_seed", "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"),  # Raydium CPMM
+    (b"vault_auth_seed", "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"),  # Raydium LaunchLab
+    (b"pool_authority", "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG"),  # Meteora DAMM v2
+    (b"pool_authority", "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN"),  # Meteora dynamic bonding curve
+]
+
+
+def _authorities() -> set[str]:
+    from solders.pubkey import Pubkey
+    return {str(Pubkey.find_program_address([seed], Pubkey.from_string(prog))[0]) for seed, prog in _AUTHORITY_SEEDS}
+
+
+POOL_AUTHORITIES = _authorities()
 
 
 class _Bucket:
@@ -46,16 +72,19 @@ class _Bucket:
 
 
 class LimitedClient(httpx.Client):
-    """httpx.Client with a token bucket per host (Jupiter's /execute has its own), and one polite retry on 429."""
+    """httpx.Client with a token bucket per host (Jupiter's /execute has its own), and one polite retry on 429.
+
+    `share` reuses another client's buckets, so two clients together still keep to each host's limit; the manager
+    gets its own client with a short `max_wait`, so a rate-limited scanner never holds up a stop loss for long."""
 
     RATES = {"api.jup.ag": 0.8, "api.jup.ag/execute": 5.0, "api.dexscreener.com": 4.0,
              "api.geckoterminal.com": 0.15, "api.rugcheck.xyz": 0.5}
 
-    def __init__(self, rates: dict | None = None, sleep=time.sleep, **kw):
+    def __init__(self, rates: dict | None = None, sleep=time.sleep, share: LimitedClient | None = None, max_wait: float = 30.0, **kw):
         kw.setdefault("timeout", 20)
         super().__init__(**kw)
-        self._sleep = sleep
-        self._buckets = {k: _Bucket(v) for k, v in {**self.RATES, **(rates or {})}.items()}
+        self._sleep, self._max_wait = sleep, max_wait
+        self._buckets = share._buckets if share else {k: _Bucket(v) for k, v in {**self.RATES, **(rates or {})}.items()}
 
     def _bucket(self, url) -> _Bucket | None:
         u = urlparse(str(url))
@@ -78,7 +107,7 @@ class LimitedClient(httpx.Client):
                 wait_s = 2.0
             if wait_s > 1e9:  # an epoch timestamp, not a delay
                 wait_s = max(0.0, wait_s - time.time())
-            self._sleep(min(max(wait_s, 0.5), 30.0))
+            self._sleep(min(max(wait_s, 0.5), self._max_wait))
         return r
 
 
@@ -119,7 +148,7 @@ class DexScreener:
         self.http = http
 
     def tokens(self, mints: list[str]) -> dict[str, dict]:
-        """Deepest Solana pair per mint (by liquidity), plus total liquidity across its pairs."""
+        """Deepest Solana pair per mint (by liquidity), plus total liquidity and every pair address (pool accounts)."""
         out: dict[str, dict] = {}
         for i in range(0, len(mints), 30):
             r = self.http.get(f"{DEXSCREENER}/tokens/v1/solana/{','.join(mints[i:i + 30])}")
@@ -133,6 +162,7 @@ class DexScreener:
                 best = max(ps, key=lambda p: _num((p.get("liquidity") or {}).get("usd"), 0))
                 best = dict(best)
                 best["_total_liquidity_usd"] = sum(_num((p.get("liquidity") or {}).get("usd"), 0) for p in ps)
+                best["_pair_addresses"] = [p["pairAddress"] for p in ps if p.get("pairAddress")]
                 out[m] = best
         return out
 
@@ -152,24 +182,25 @@ class GeckoTerminal:
     def __init__(self, http: httpx.Client):
         self.http = http
 
-    def candles(self, pool: str, minutes: int = 5, limit: int = 100) -> list[list[float]]:
-        """[[ts, open, high, low, close, volume_usd], ...] oldest first."""
-        r = self.http.get(f"{GECKO}/networks/solana/pools/{pool}/ohlcv/minute",
-                          params={"aggregate": minutes, "limit": limit, "currency": "usd", "include_empty_intervals": "true"},
-                          headers={"accept": "application/json"})
+    def candles(self, pool: str, minutes: int = 5, limit: int = 100, token: str | None = None) -> list[list[float]]:
+        """[[ts, open, high, low, close, volume_usd], ...] oldest first, priced in `token` (the pool's base by default)."""
+        params = {"aggregate": minutes, "limit": limit, "currency": "usd", "include_empty_intervals": "true"}
+        if token:
+            params["token"] = token
+        r = self.http.get(f"{GECKO}/networks/solana/pools/{pool}/ohlcv/minute", params=params, headers={"accept": "application/json"})
         r.raise_for_status()
         rows = (((r.json() or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         return sorted(([float(v) for v in row[:6]] for row in rows if len(row) >= 6), key=lambda x: x[0])
 
 
 class RugCheck:
-    def __init__(self, http: httpx.Client, ttl: float = 900):
-        self.http, self.ttl = http, ttl
+    def __init__(self, http: httpx.Client, ttl: float = 900, fail_ttl: float = 120):
+        self.http, self.ttl, self.fail_ttl = http, ttl, fail_ttl
         self._cache: dict[str, tuple[dict | None, float]] = {}
 
     def summary(self, mint: str) -> dict | None:
         hit = self._cache.get(mint)
-        if hit and time.monotonic() - hit[1] < self.ttl:
+        if hit and time.monotonic() - hit[1] < (self.ttl if hit[0] is not None else self.fail_ttl):
             return hit[0]
         try:
             r = self.http.get(f"{RUGCHECK}/tokens/{mint}/report/summary")
@@ -182,14 +213,17 @@ class RugCheck:
 
 
 class Holders:
-    """Top holders from RPC. Pools, bonding curves and other program accounts own their token accounts through
-    off-curve addresses (PDAs); real wallets are on-curve. So off-curve owners and the burn address are left out."""
+    """Top holders from RPC, with the token's pools and the burn address left out.
+
+    A pool is recognised by what it is, never by being a program address: one of the token's pair addresses from
+    DexScreener, a known AMM's vault authority, or an account owned by a known AMM program. Any other owner counts
+    as a holder, including program addresses (a multisig vault or the creator's own program can hold supply too)."""
 
     def __init__(self, rpc, clock=time.time):
         self.rpc, self.clock = rpc, clock
 
-    def top(self, mint: str) -> list[tuple[str, float]]:
-        """[(owner, share of supply in %), ...] for real wallets among the 20 largest token accounts."""
+    def top(self, mint: str, pools=()) -> list[tuple[str, float]]:
+        """[(owner, share of supply in %), ...] among the 20 largest token accounts, pools and burns excluded."""
         from solders.pubkey import Pubkey
         supply = self.rpc.call("getTokenSupply", [mint])["value"]
         total = int(supply["amount"]) or 1
@@ -198,15 +232,22 @@ class Holders:
         if not addrs:
             return []
         infos = self.rpc.call("getMultipleAccounts", [addrs, {"encoding": "jsonParsed", "commitment": "confirmed"}])["value"]
-        out: dict[str, float] = {}
+        owners: list[tuple[str, int]] = []
         for a, info in zip(largest, infos):
             try:
-                owner = info["data"]["parsed"]["info"]["owner"]
-            except (TypeError, KeyError):
+                owners.append((info["data"]["parsed"]["info"]["owner"], int(a["amount"])))
+            except (TypeError, KeyError, ValueError):
                 continue
-            if owner == BURN or not Pubkey.from_string(owner).is_on_curve():
-                continue
-            out[owner] = out.get(owner, 0.0) + int(a["amount"]) / total * 100
+        skip = {BURN, *POOL_AUTHORITIES, *pools}
+        pdas = sorted({o for o, _ in owners if o not in skip and not Pubkey.from_string(o).is_on_curve()})
+        if pdas:
+            accts = self.rpc.call("getMultipleAccounts", [pdas, {"encoding": "base64", "dataSlice": {"offset": 0, "length": 0},
+                                                                 "commitment": "confirmed"}])["value"]
+            skip |= {o for o, acc in zip(pdas, accts) if isinstance(acc, dict) and acc.get("owner") in POOL_PROGRAMS}
+        out: dict[str, float] = {}
+        for owner, amount in owners:
+            if owner not in skip:
+                out[owner] = out.get(owner, 0.0) + amount / total * 100
         return sorted(out.items(), key=lambda kv: -kv[1])
 
     def fresh_share(self, holders: list[tuple[str, float]], hours: float, check: int = 10) -> tuple[float, int]:

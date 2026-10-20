@@ -257,7 +257,7 @@ function render(s) {
   for (const p of s.positions) {
     const tr = el("tr");
     const tp = p.rungs.map((x, i) => (i < p.rungsDone ? "✓" : "") + px(x)).join(" · ") + (p.book ? " · " + px(p.book) : "");
-    tr.append(el("td", null, "$" + p.symbol), el("td", null, p.station), el("td", "r num", px(p.entry)), el("td", "r num", px(p.price)),
+    tr.append(el("td", null, "$" + p.symbol), el("td", null, p.station), el("td", "r num", px(p.entry)), el("td", "r num", p.unpriced ? "no price" : px(p.price)),
       el("td", "r num " + (p.pnlPct >= 0 ? "good" : "bad"), pct(p.pnlPct)), el("td", "r num", px(p.stop)), el("td", "r num", tp),
       el("td", "r num", money(p.value)), el("td", "r num", p.ageMin + "m"));
     tb.append(tr);

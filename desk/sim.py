@@ -166,7 +166,7 @@ class SimGecko:
     def __init__(self, m: SimMarket):
         self.m = m
 
-    def candles(self, pool, minutes=5, limit=72):
+    def candles(self, pool, minutes=5, limit=72, token=None):
         tok = next((t for t in self.m.tokens.values() if "pool" + t.mint[:8] == pool), None)
         return self.m.candles(tok, minutes)[-limit:] if tok else []
 
@@ -189,7 +189,7 @@ class SimHolders:
         self.m = m
         self._last = ""
 
-    def top(self, mint):
+    def top(self, mint, pools=()):
         self._last = mint
         tok = self.m.tokens[mint]
         rest = max(tok.top10 - tok.top1, 0) / 9

@@ -1,7 +1,8 @@
 """What must be true before the desk may spend real money. Every check reads evidence on disk.
 
-The paper record has to be long enough to mean something AND positive after costs: if the desk loses money
-with fake money, it will lose money with real money.
+The paper record has to be long enough to mean something AND positive after costs, the Claude bill included: if
+the desk loses money with fake money, it will lose money with real money. And the desk has to do at least as well
+as the rules-only shadow book, or it is not earning what it costs.
 """
 
 from __future__ import annotations
@@ -11,11 +12,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from desk.journal import Journal, trade_stats
+from desk.journal import Journal, day_of, trade_stats
 from phantom.config import file_sha256
 
 MIN_PAPER_HOURS = 72
 MIN_PAPER_TRADES = 30
+MIN_SHADOW_TRADES = 10
 
 BLOW_UP_RISKS = [
     "About 74% of Solana memecoin buyers end with less money than they started (Bitquery, 2.9M buyers), and 1% of "
@@ -66,21 +68,42 @@ def go_live_report(state: Path, config: Path) -> Report:
     ack = state / "desk_ack_risks.json"
     ok = ack.exists() and json.loads(ack.read_text()).get("count") == len(BLOW_UP_RISKS)
     checks.append(Check("risks read", ok, "every risk accepted" if ok else "run ./desk.sh ack-risks"))
+    try:
+        from desk.config import load_config
+        desk_on = load_config(config).desk.enabled
+    except (OSError, ValueError, TypeError):
+        desk_on = True  # can't tell: judge it the stricter way
     j = Journal(state / "desk.sqlite")
     curve = j.equity_curve("paper")
     hours = (curve[-1]["t"] - curve[0]["t"]) / 3600 if len(curve) > 1 else 0.0
-    st = trade_stats(j.closed_positions("paper", "real"))
+    real_rows, shadow_rows = j.closed_positions("paper", "real"), j.closed_positions("paper", "shadow")
+    rows = real_rows if desk_on else shadow_rows  # with the desk off, the bot trades exactly what the shadow book did
+    st, sh = trade_stats(rows), trade_stats(shadow_rows)
     n = st.get("n", 0)
     checks.append(Check("paper long enough", hours >= MIN_PAPER_HOURS and n >= MIN_PAPER_TRADES,
                         f"{hours:.0f}h and {n} closed trades on paper (need {MIN_PAPER_HOURS}h and {MIN_PAPER_TRADES})"))
-    pnl = st.get("pnl_usd", 0.0)
+    ai = 0.0
+    if desk_on and len(curve) > 1:
+        days = {day_of(curve[0]["t"] + i * 86400) for i in range(int(hours // 24) + 1)} | {day_of(curve[-1]["t"])}
+        ai = sum(float(v or 0) for k, v in j.get_prefix("ai_spend:").items() if k.split(":", 1)[1] in days)
+    pnl = st.get("pnl_usd", 0.0) - ai
     checks.append(Check("paper made money", n >= MIN_PAPER_TRADES and pnl > 0,
-                        f"paper P&L {pnl:+.2f} USD after costs" + ("" if pnl > 0 else ": a desk that loses on paper loses with real money")))
+                        f"paper P&L {pnl:+.2f} USD after trading costs" + (f" and {ai:.2f} USD of Claude" if desk_on else "")
+                        + ("" if pnl > 0 else ": a desk that loses on paper loses with real money")))
+    if desk_on:
+        spent = sum(r["cost_usd"] for r in real_rows) or 0.0
+        desk_exp = st.get("expectancy_pct", 0.0) - (ai / spent * 100 if spent else 0.0)
+        ok = n >= MIN_PAPER_TRADES and sh.get("n", 0) >= MIN_SHADOW_TRADES and desk_exp >= sh.get("expectancy_pct", 0.0)
+        checks.append(Check("desk beats rules-only", ok,
+                            f"desk {desk_exp:+.1f}%/trade after its Claude bill vs rules-only {sh.get('expectancy_pct', 0.0):+.1f}%/trade "
+                            f"over {sh.get('n', 0)} shadow trades (need {MIN_SHADOW_TRADES})"
+                            + ("" if ok else ": if rules-only does better, set desk.enabled: false and when_unavailable: rules_only")))
+    else:
+        checks.append(Check("desk beats rules-only", True, "desk off: the paper record is the rules-only book"))
     keys = [k for k in ("DESK_BOT_PRIVATE_KEY", "DESK_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL") if not os.environ.get(k)]
     checks.append(Check("keys in .env", not keys, "all set" if not keys else f"missing {', '.join(keys)}"))
     ok = os.environ.get("DESK_LIVE") == "yes"
     checks.append(Check("DESK_LIVE=yes", ok, "set in .env" if ok else "set DESK_LIVE=yes in .env when you are sure"))
-    sh = trade_stats(j.closed_positions("paper", "shadow"))
     summary = (f"{hours:.0f}h · {n} trades · expectancy {st.get('expectancy_pct', 0):+.1f}%/trade "
                f"(95% range {st.get('ci95_pct')}) · rules-only shadow {sh.get('expectancy_pct', 0):+.1f}%/trade over {sh.get('n', 0)}")
     return Report(checks, summary)

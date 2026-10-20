@@ -28,12 +28,15 @@ class TokenStats:
 
 
 class Prices:
-    """USD prices for up to 50 mints per call. Cached for a few seconds."""
+    """USD prices for up to 50 mints per call. Cached for a few seconds.
 
-    def __init__(self, api_key: str, http: httpx.Client | None = None, ttl: float = 5.0):
+    With `max_age`, a price older than that is left out instead of returned: Jupiter drops a mint from its answer
+    when it can no longer price it (often right after a rug), and an old price would hide the crash."""
+
+    def __init__(self, api_key: str, http: httpx.Client | None = None, ttl: float = 5.0, max_age: float | None = None):
         self.http = http or httpx.Client(timeout=15)
         self.headers = {"x-api-key": api_key} if api_key else {}
-        self.ttl = ttl
+        self.ttl, self.max_age = ttl, max_age
         self._cache: dict[str, tuple[float, float]] = {}
 
     def get(self, mints: list[str]) -> dict[str, float]:
@@ -45,7 +48,8 @@ class Prices:
             for m, v in (r.json() or {}).items():
                 if isinstance(v, dict) and v.get("usdPrice"):
                     self._cache[m] = (float(v["usdPrice"]), now)
-        return {m: self._cache[m][0] for m in mints if m in self._cache}
+        return {m: self._cache[m][0] for m in mints
+                if m in self._cache and (self.max_age is None or now - self._cache[m][1] <= self.max_age)}
 
     def sol_usd(self) -> float:
         p = self.get([WSOL]).get(WSOL)

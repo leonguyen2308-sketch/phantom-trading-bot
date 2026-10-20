@@ -126,26 +126,37 @@ def test_rugcheck_down_is_unknown_and_cached():
 
 
 class FakeRpc:
-    def __init__(self, accounts, sigs=None):
-        self.accounts, self.sigs = accounts, sigs or {}
+    def __init__(self, accounts, sigs=None, programs=None):
+        self.accounts, self.sigs, self.programs = accounts, sigs or {}, programs or {}
 
     def call(self, method, params):
         if method == "getTokenSupply":
             return {"value": {"amount": "1000"}}
         if method == "getTokenLargestAccounts":
             return {"value": [{"address": f"acct{i}", "amount": str(amt)} for i, (_, amt) in enumerate(self.accounts)]}
-        if method == "getMultipleAccounts":
+        if method == "getMultipleAccounts" and params[1]["encoding"] == "jsonParsed":
             return {"value": [None if o is None else {"data": {"parsed": {"info": {"owner": o}}}} for o, _ in self.accounts]}
+        if method == "getMultipleAccounts":  # who owns these program addresses
+            return {"value": [{"owner": self.programs[a]} if a in self.programs else None for a in params[0]]}
         if method == "getSignaturesForAddress":
             return self.sigs.get(params[0], [])
         raise AssertionError(method)
 
 
+def _pda(seed):
+    return str(Pubkey.find_program_address([seed], Pubkey.from_string("11111111111111111111111111111111"))[0])
+
+
 def test_holders_leave_out_pools_and_burns_and_merge_accounts():
+    from desk.sources import POOL_AUTHORITIES
     wallet = str(Keypair().pubkey())
-    pda, _ = Pubkey.find_program_address([b"pool"], Pubkey.from_string("11111111111111111111111111111111"))
-    rpc = FakeRpc([(str(pda), 500), (BURN, 200), (wallet, 50), (wallet, 30), (None, 100)])
-    assert Holders(rpc).top("M") == [(wallet, pytest.approx(8.0))]
+    pumpswap_pool, dex_pair, vault = _pda(b"pumpswap"), _pda(b"pair"), _pda(b"dev multisig")
+    raydium = "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1"  # Raydium AMM v4 authority
+    assert raydium in POOL_AUTHORITIES
+    rpc = FakeRpc([(pumpswap_pool, 300), (raydium, 200), (dex_pair, 100), (BURN, 200), (vault, 60), (wallet, 50), (wallet, 30), (None, 50)],
+                  programs={pumpswap_pool: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", vault: "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"})
+    top = Holders(rpc).top("M", pools=[dex_pair])
+    assert top == [(wallet, pytest.approx(8.0)), (vault, pytest.approx(6.0))]  # a program address that isn't a pool still counts
 
 
 def test_fresh_share_counts_only_wallets_whose_whole_history_is_recent():
@@ -201,7 +212,7 @@ def good_market(**over):
 
 
 def test_g1_passes_a_clean_token_and_names_each_problem():
-    assert funnel.g1_market(good_market(), "raydium", {}, CFG.gates) == []
+    assert funnel.g1_market(good_market(), "raydium", JT, CFG.gates) == []
     why = funnel.g1_market(good_market(age_min=5, price_change_1h_pct=500, vol_to_mcap_1h=9), "pumpfun",
                            {"audit": {"mintAuthorityDisabled": False}}, CFG.gates)
     text = " | ".join(why)
@@ -209,8 +220,17 @@ def test_g1_passes_a_clean_token_and_names_each_problem():
         assert word in text
 
 
-def test_g1_unknown_market_cap_is_a_kill():
-    assert any("unknown" in r for r in funnel.g1_market(good_market(mcap_usd=None), "raydium", {}, CFG.gates))
+JT = {"id": "M", "audit": {}}
+
+
+def test_g1_unknown_safety_data_is_a_kill_not_a_pass():
+    def why(m=None, jt=JT):
+        return " | ".join(funnel.g1_market(m or good_market(), "raydium", jt, CFG.gates))
+    assert "market cap unknown" in why(good_market(mcap_usd=None))
+    assert "no Jupiter record" in why(jt=None)
+    assert "no sells" in why(good_market(sells_1h=0, buy_sell_ratio_1h=None))  # 250 buys, 0 sells: the honeypot pattern
+    assert "volume unknown" in why(good_market(vol_to_mcap_1h=None))
+    assert why(good_market(organic_score=None)) == ""  # an opportunity score, not a safety fact
 
 
 def test_g2_onchain():
@@ -219,6 +239,11 @@ def test_g2_onchain():
     bad = MintInfo("M", 6, "auth", None, "spl-token-2022", [{"extension": "transferHook"}, {"extension": "metadataPointer"}])
     why = funnel.g2_onchain(bad, {"top1_pct": 20, "top10_pct": 50, "fresh_share_pct": 30, "rugcheck_risk": 90}, {"rugged": True}, CFG.holders)
     assert len(why) == 7 and "Token-2022 extension transferHook" in why
+    danger = {"risks": [{"name": "Large Amount of LP Unlocked", "level": "danger"}, {"name": "Mutable metadata", "level": "warn"}]}
+    assert funnel.g2_onchain(clean, {"top1_pct": 3, "top10_pct": 20, "rugcheck_risk": 20}, danger, CFG.holders) == [
+        "RugCheck: Large Amount of LP Unlocked"]
+    assert funnel.g2_unknowns({"top10_pct": 20, "rugcheck_risk": 20}, {}) == []
+    assert len(funnel.g2_unknowns({"top10_pct": None, "rugcheck_risk": None}, None)) == 2
 
 
 def test_g3_depth():
@@ -232,10 +257,11 @@ def test_g3_depth():
 def test_g4_window_and_the_six_checks():
     why = funnel.g4_window({"drop_from_high_pct": 40, "return_30m_pct": 80}, 3, CFG.window)
     assert len(why) == 3
-    snap = {"round_trip_loss_pct": 1.0, "top10_pct": 20.0, "vol_to_mcap_1h": 0.3, "fresh_share_pct": 2.0, "drop_from_high_pct": 5.0}
+    snap = {"round_trip_loss_pct": 1.0, "top10_pct": 20.0, "vol_to_mcap_1h": 0.3, "fresh_share_pct": 2.0, "drop_from_high_pct": 5.0,
+            "rugcheck_risk": 10.0}
     assert set(funnel.checks(snap, {}).values()) == {"PASS"}
     c = funnel.checks({}, {"window": why})
-    assert c["entry window"] == "FAIL" and c["holder spread"] == "?"
+    assert c["entry window"] == "FAIL" and c["holder spread"] == "?" and c["rug signature"] == "?"
 
 
 # ---------------------------------------------------------------- go-live
@@ -252,23 +278,45 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     j = Journal(tmp_path / "desk.sqlite")
     j.equity("paper", 0, 100)
     j.equity("paper", 80 * 3600, 105)
-    for i in range(30):
-        j.open_position(mode="paper", book="real", mint=f"M{i}", symbol="X", decimals=6, station="scout", opened_t=i, cost_usd=3.0,
-                        raw=1, entry_price=1.0, plan={}, closed_t=i + 600, pnl=0.2)
+    closed(j, "real", 30, 0.2)  # +6.7%/trade
+    closed(j, "shadow", 20, 0.1)  # rules-only: +3.3%/trade
+    j.put("ai_spend:1970-01-01", 2.0)
     for k in ("DESK_BOT_PRIVATE_KEY", "DESK_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL"):
         monkeypatch.setenv(k, "x")
     monkeypatch.setenv("DESK_LIVE", "yes")
     rep = golive.go_live_report(tmp_path, cfg)
     assert rep.ok, rep.text()
 
+    j.put("ai_spend:1970-01-02", 3.0)  # $6 of trading profit, $5 of Claude: still up, but no better than rules alone
+    rep = golive.go_live_report(tmp_path, cfg)
+    assert [c.name for c in rep.checks if not c.ok] == ["desk beats rules-only"]
+    j.put("ai_spend:1970-01-03", 2.0)  # now the Claude bill is bigger than the profit
+    assert {c.name for c in golive.go_live_report(tmp_path, cfg).checks if not c.ok} == {"paper made money", "desk beats rules-only"}
+    j.put("ai_spend:1970-01-02", 0.0)
+    j.put("ai_spend:1970-01-03", 0.0)
+
     cfg.write_text(cfg.read_text() + "\n# edited\n")
     assert not golive.go_live_report(tmp_path, cfg).ok  # any change to the rules needs a new approval
 
 
+def closed(j, book, n, pnl):
+    for i in range(n):
+        j.open_position(mode="paper", book=book, mint=f"M{i}", symbol="X", decimals=6, station="scout", opened_t=i, cost_usd=3.0,
+                        raw=1, entry_price=1.0, plan={}, closed_t=i + 600, pnl=pnl)
+
+
 def test_golive_refuses_a_losing_paper_record(tmp_path, monkeypatch):
     j = Journal(tmp_path / "desk.sqlite")
-    for i in range(40):
-        j.open_position(mode="paper", book="real", mint=f"M{i}", symbol="X", decimals=6, station="scout", opened_t=i, cost_usd=3.0,
-                        raw=1, entry_price=1.0, plan={}, closed_t=i + 600, pnl=-0.1)
+    closed(j, "real", 40, -0.1)
     (c,) = [c for c in golive.go_live_report(tmp_path, tmp_path / "none.yaml").checks if c.name == "paper made money"]
     assert not c.ok and "loses" in c.detail
+
+
+def test_golive_with_the_desk_off_judges_the_rules_only_book(tmp_path):
+    cfg = tmp_path / "desk.yaml"
+    cfg.write_text(open("config/desk.yaml").read().replace("  enabled: true\n  model:", "  enabled: false\n  model:"))
+    j = Journal(tmp_path / "desk.sqlite")
+    closed(j, "real", 5, 1.0)
+    closed(j, "shadow", 30, -0.1)
+    checks = {c.name: c for c in golive.go_live_report(tmp_path, cfg).checks}
+    assert checks["desk beats rules-only"].ok and not checks["paper made money"].ok

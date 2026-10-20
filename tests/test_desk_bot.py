@@ -32,6 +32,7 @@ class World:
         self.price = {GOOD: 0.001, BAD: 0.001}
         self.dex_id = {GOOD: "pumpswap", BAD: "pumpswap"}
         self.mint_auth, self.no_sell, self.top10 = set(), set(), {}
+        self.jup_hidden, self.dex_hidden = set(), set()  # mints Jupiter's price API / DexScreener leave out
         self.calls = {"holders": 0}
 
     # Jupiter tokens
@@ -55,10 +56,11 @@ class World:
     def tokens(self, mints):
         out = {}
         for m in mints:
-            if m not in self.price:
+            if m not in self.price or m in self.dex_hidden:
                 continue
             mc = self.price[m] * 1e9
             out[m] = {"chainId": "solana", "dexId": self.dex_id[m], "pairAddress": "pool" + m[:6], "baseToken": {"address": m, "symbol": "X"},
+                      "priceUsd": str(self.price[m]),
                       "liquidity": {"usd": 150_000}, "_total_liquidity_usd": 150_000, "marketCap": mc, "pairCreatedAt": (self.clock() - 3 * 3600) * 1000,
                       "volume": {"m5": 30_000, "h1": 300_000, "h6": 1.2e6}, "txns": {"m5": {"buys": 60, "sells": 40}, "h1": {"buys": 700, "sells": 500}},
                       "priceChange": {"m5": 2, "h1": 15, "h6": 40, "h24": 80}, "boosts": {"active": 0}, "info": {}}
@@ -68,7 +70,7 @@ class World:
         return []
 
     # GeckoTerminal: a steady uptrend near its high
-    def candles(self, pool, minutes=5, limit=72):
+    def candles(self, pool, minutes=5, limit=72, token=None):
         m = GOOD if pool == "pool" + GOOD[:6] else BAD
         p, t = self.price[m], self.clock()
         return [[t - (40 - i) * 300, p * (0.8 + i * 0.005), p * (0.81 + i * 0.005), p * (0.795 + i * 0.005), p * (0.805 + i * 0.005), 5000]
@@ -87,14 +89,14 @@ class World:
         return MintInfo(mint, 6, "A" * 44 if mint in self.mint_auth else None, None, "spl-token")
 
     def get(self, mints):
-        return {m: self.price[m] for m in mints if m in self.price}
+        return {m: self.price[m] for m in mints if m in self.price and m not in self.jup_hidden}
 
 
 class Holders:
     def __init__(self, w):
         self.w = w
 
-    def top(self, mint):
+    def top(self, mint, pools=()):
         return self.w.holders_top(mint)
 
     def fresh_share(self, holders, hours, check=10):
@@ -356,3 +358,150 @@ def test_dashboard_state_has_what_the_page_reads(tmp_path):
               "real", "shadow", "calibration", "ai", "limits", "health", "blocked", "scanState"):
         assert k in s
     assert s["latest"]["action"] == "buy" and s["positions"][0]["symbol"] == "GOOD"
+
+
+# ---------------------------------------------------------------- what the reviews found
+def test_a_coin_jupiter_stops_pricing_is_priced_from_dexscreener(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    w.jup_hidden.add(GOOD)
+    w.price[GOOD] = p["entry_price"] * 0.5  # the crash Jupiter no longer shows
+    tick(d, clock, 15)
+    (c,) = d.journal.closed_positions("paper")
+    assert c["exit_kind"] == "stop"
+
+
+def test_a_coin_nobody_prices_or_buys_is_treated_as_dead(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    w.jup_hidden.add(GOOD)
+    w.dex_hidden.add(GOOD)
+    w.no_sell.add(GOOD)
+    tick(d, clock, 15)
+    assert d.journal.open_positions("paper") and GOOD in d.unpriced  # not yet: the sources may be catching up
+    for _ in range(14):
+        tick(d, clock, 10)
+    assert d.equity_now == pytest.approx(d.broker.cash)  # valued at nothing, so the drawdown limits see the loss
+    assert d.journal.open_positions("paper")[0]["exit_pending"]  # and it is being sold (no route yet, so retried)
+    assert d.journal.open_positions("paper", "shadow") == []  # the rules-only arm booked it at zero
+    assert not d.kill.tripped  # a 3% position going to zero is a loss, not an emergency
+
+
+def test_kill_switch_during_the_requote_stops_the_buy(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    real_quote = d.broker.quote_buy
+    calls = []
+
+    def quote_buy(mint, usd):
+        calls.append(1)
+        if len(calls) == 2:  # the re-quote, after the desk said yes
+            d.kill.trip("pressed while the desk was deciding")
+        return real_quote(mint, usd)
+    d.broker.quote_buy = quote_buy
+    d.sweep()
+    assert d.journal.open_positions("paper") == [] and d.broker.cash == 100.0
+
+
+def test_a_coin_looked_at_again_gets_one_shadow_position(tmp_path):
+    d, w, clock = make(tmp_path, desk=FakeDesk(verdict="block"))
+    only_good(w)
+    for _ in range(3):
+        d.sweep()
+        clock.t += d.cfg.scan.recheck_passed_minutes * 60 + 1
+        d.prices_now.clear()
+    assert d.desk.calls == 3 and len(d.journal.open_positions("paper", "shadow")) == 1
+
+
+def test_one_coin_that_cant_be_sold_never_fires_the_kill_switch(tmp_path):
+    cfg = load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, position_pct=20, max_position_usd=50, max_exposure_pct=60))
+    d, w, clock = make(tmp_path, cfg=cfg)
+    only_good(w)
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    real_execute = d.broker.execute
+
+    def execute(q):
+        if q.side == "sell":
+            raise RuntimeError("transaction failed")
+        return real_execute(q)
+    d.broker.execute = execute
+    w.price[GOOD] = p["entry_price"] * 0.8  # through the stop; the sell keeps failing
+    for _ in range(40):
+        tick(d, clock, 10)
+    assert not d.kill.tripped
+    (p,) = d.journal.open_positions("paper")
+    assert p["exit_pending"] and d._retry_at.get(p["id"], 0) > clock.t  # worth more than dust: kept, retried once a minute
+
+
+class LiveBroker(Broker):
+    mode = "live"
+
+    def __init__(self, w, usd=100.0):
+        super().__init__(w, usd)
+        self.reads_fail = False
+        self.zero_reads = 0
+
+    def holdings(self):
+        if self.reads_fail:
+            raise RuntimeError("rpc down")
+        h = dict(self.tok)
+        h["EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"] = int(self.cash * 1e6)
+        if self.zero_reads:
+            self.zero_reads -= 1
+            h.pop(GOOD, None)
+        return h
+
+    def token_raw(self, mint):
+        return self.holdings().get(mint, 0)
+
+    def usdc(self):
+        return self.cash
+
+
+def test_live_buy_is_not_sent_when_the_wallet_cant_be_read_first(tmp_path):
+    d, w, clock = make(tmp_path)
+    d.mode = "live"
+    d.broker = LiveBroker(w)
+    d.broker.reads_fail = True
+    only_good(w)
+    d.sweep()
+    assert d.journal.open_positions("live") == [] and d.broker.cash == 100.0
+
+
+def test_live_one_zero_balance_read_does_not_close_a_position(tmp_path):
+    d, w, clock = make(tmp_path)
+    d.mode = "live"
+    d.broker = LiveBroker(w)
+    only_good(w)
+    d.sweep()
+    (p,) = d.journal.open_positions("live")
+    clock.t += 300
+    d.broker.zero_reads = 1
+    d.mark()
+    d.mark()
+    assert d.journal.open_positions("live")  # one lagging read changes nothing
+    d.broker.tok[GOOD] = p["raw"] // 2  # half was sold by hand in Phantom
+    for _ in range(3):
+        d.mark()
+    (p2,) = d.journal.open_positions("live")
+    assert p2["sold_raw"] == p["raw"] - p["raw"] // 2 and p2["cost_usd"] == p["cost_usd"]  # booked as an exit for nothing
+    (x,) = [r for r in d.journal.exits_by_kind("live") if r["kind"] == "manual"]
+    assert x["pnl"] == pytest.approx(-p["cost_usd"] / 2, rel=0.01)
+
+
+def test_error_counts_survive_a_restart_per_source(tmp_path):
+    d, w, clock = make(tmp_path)
+    for i in range(3):
+        clock.t += 16
+        d._api_error("x", "prices")
+    d2 = Desk(mode="paper", cfg=d.cfg, broker=d.broker, jup=w, dex=w, gecko=w, rug=w, holders=Holders(w), mint_info=w.mint_info,
+              prices=w, desk=FakeDesk(), journal=d.journal, kill=d.kill, clock=clock, threaded=False)
+    assert d2.errors == {"prices": 3}
+    d2._api_ok("prices")
+    assert d2.api_errors == 0

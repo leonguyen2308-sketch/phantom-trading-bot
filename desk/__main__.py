@@ -64,15 +64,19 @@ def tracked_wallets() -> dict[str, str]:
 
 
 def real_sources(cfg):
-    """The live data sources, sharing one rate-limited HTTP client (Jupiter's free key is ~1 request/second for everything)."""
+    """The live data sources. One set of per-host rate limits (Jupiter's free key is ~1 request/second for everything),
+    shared by two clients: the scanner's, which may wait out a 429 for up to 30 s, and the manager's (prices for
+    open positions), which waits at most 2 s so a stop is never held up by the scanner's rate limit."""
     from desk.sources import DexScreener, GeckoTerminal, Holders, JupiterTokens, LimitedClient, RugCheck
     from fomo.chain import SolanaRpc
     from fomo.market import Prices
     http = LimitedClient()
+    mhttp = LimitedClient(share=http, max_wait=2.0)
     rpc = SolanaRpc(os.environ["SOLANA_RPC_URL"])
     key = os.environ.get("JUPITER_API_KEY", "")
     return {"http": http, "rpc": rpc, "jup": JupiterTokens(key, http), "dex": DexScreener(http), "gecko": GeckoTerminal(http),
-            "rug": RugCheck(http), "holders": Holders(rpc), "mint_info": rpc.mint_info, "prices": Prices(key, http)}
+            "rug": RugCheck(http), "holders": Holders(rpc), "mint_info": rpc.mint_info, "prices": Prices(key, mhttp, max_age=30),
+            "mdex": DexScreener(mhttp)}
 
 
 # ---------------------------------------------------------------- run
@@ -146,7 +150,7 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
                                         max_age_seconds=max(cfg.track.max_signal_age_seconds * 2, 120))
         bot = Desk(mode=mode, cfg=cfg, broker=broker, jup=src["jup"], dex=src["dex"], gecko=src["gecko"], rug=src["rug"],
                    holders=src["holders"], mint_info=src["mint_info"], prices=src["prices"], desk=brain, journal=journal, kill=kill,
-                   watcher=watcher, tracked=tracked)
+                   watcher=watcher, tracked=tracked, mdex=src["mdex"])
 
     if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID") and mode != "demo":
         from phantom.alerts import Telegram
@@ -165,7 +169,7 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
         bot.alerts.listen({"/status": status, "/kill": tg_kill})
         bot._alert(f"Memecoin Desk started in {mode.upper()} mode. Send /status or /kill.")
 
-    serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r), bot.lock, page=PAGE), port)
+    serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r, sell=False), bot.lock, page=PAGE), port)
     log.info("Dashboard: http://localhost:%d", port)
     bot.start()
     last_cfg_check = 0.0
@@ -185,6 +189,8 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
         except Exception as e:  # never die with positions open: log, count, keep going
             log.exception("Loop error")
             bot._api_error(f"loop: {type(e).__name__}: {e}")
+        else:
+            bot._api_ok("general")
         time.sleep(0.2 if mode == "demo" else tick)
 
 

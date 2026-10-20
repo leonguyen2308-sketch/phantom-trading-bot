@@ -67,6 +67,11 @@ class Journal:
         return json.loads(row["v"]) if row else default
 
     @_locked
+    def get_prefix(self, prefix: str) -> dict:
+        return {r["k"]: json.loads(r["v"]) for r in self.db.execute("SELECT k, v FROM kv WHERE k LIKE ? ESCAPE '\\'",
+                                                                   (prefix.replace("_", "\\_").replace("%", "\\%") + "%",))}
+
+    @_locked
     def put(self, k: str, v) -> None:
         self.db.execute("INSERT INTO kv(k, v) VALUES(?, ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, json.dumps(v)))
         self.db.commit()
