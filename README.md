@@ -1,5 +1,10 @@
 # Phantom trading bot
 
+> **Newest: Memecoin Desk** (`./desk.sh`). Solana memecoins through a code funnel (market, on-chain, depth,
+> entry window), then a Claude desk (analyst + skeptic, numbers only, can only veto or shrink), with the exit plan
+> written before entry and a rules-only shadow book to measure whether the AI adds anything. Guide in Vietnamese,
+> A to Z: [`HUONG_DAN_DESK.md`](HUONG_DAN_DESK.md). Try it with no keys: `./desk.sh demo`, then open http://localhost:8002.
+
 > **New: FOMO copy bot** (`./fomo.sh`). Copies the FOMO weekly top trader at 0.25x, exits when they sell,
 > fires them after 2 losses in a row, like the copyfomo video. Guides in Vietnamese: [`HUONG_DAN.md`](HUONG_DAN.md)
 > (step by step, A to Z) and [`FOMO_BOT.md`](FOMO_BOT.md).
