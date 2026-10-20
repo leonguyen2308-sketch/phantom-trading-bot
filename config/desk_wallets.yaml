@@ -1,0 +1,9 @@
+# Wallets for the optional TRACK station (set track.enabled: true in config/desk.yaml).
+# A tracked wallet's buy is only a CANDIDATE: it still has to pass every gate and the desk.
+# Pick wallets that hold for hours, not first-block snipers (you can't beat them from home).
+#
+# wallets:
+#   - name: some_trader
+#     wallet: PASTE_THE_SOLANA_WALLET_ADDRESS_HERE
+
+wallets: []

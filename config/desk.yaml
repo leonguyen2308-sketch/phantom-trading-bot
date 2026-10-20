@@ -1,0 +1,101 @@
+# Memecoin Desk: every rule and limit in one place. Live trading records this file's hash when you approve it
+# (./desk.sh approve) and refuses to start, or stops, if it changes. Percentages are numbers (25 = 25%).
+
+scan:
+  interval_seconds: 60          # how often the Scout sweeps the universe
+  organic_every: 5              # also pull Jupiter's top-organic list every N sweeps
+  dexscreener_every: 2          # and DexScreener's new profiles/boosts every N sweeps
+  max_universe: 300             # cap on tokens looked at per sweep
+  deep_checks_per_sweep: 4      # tokens per sweep that get on-chain holder checks (RPC credits)
+  recheck_killed_minutes: 360   # a token killed on facts (authority, holders, rug) is not re-checked for this long
+  recheck_passed_minutes: 30    # a finalist the desk looked at is not re-sent to the desk for this long
+
+gates:                          # G1: cheap numbers already in hand (Jupiter + DexScreener batches)
+  min_age_minutes: 20           # skip the first minutes after the pool opens (insiders' and snipers' zone)
+  max_age_hours: 72
+  min_liquidity_usd: 25000      # graduated tokens with a real pool only; bonding-curve coins are skipped
+  min_market_cap_usd: 150000
+  max_market_cap_usd: 30000000
+  min_txns_1h: 200
+  min_buy_sell_ratio_1h: 0.9    # buys / sells over the last hour
+  max_price_change_1h_pct: 120  # don't chase a coin that already ran this much in an hour
+  min_price_change_1h_pct: -25  # nor one that is dumping
+  min_organic_score: 30         # Jupiter's 0-100 organic-activity score (when present)
+  max_jupiter_top_holders_pct: 45
+  max_dev_balance_pct: 10
+  min_vol_to_mcap_1h: 0.05       # an hour's volume vs market cap: too low = nobody trading it...
+  max_vol_to_mcap_1h: 3.0        # ...too high = likely wash trading
+
+holders:                        # G2: on-chain facts (RPC), only for G1 survivors
+  require_mint_authority_revoked: true
+  require_freeze_authority_revoked: true
+  blocked_token2022_extensions: [transferHook, permanentDelegate, nonTransferable, transferFeeConfig, defaultAccountState, pausableConfig]
+  max_top1_pct: 8               # largest real wallet (pools and burns excluded)
+  max_top10_pct: 30
+  fresh_wallet_hours: 48        # a holder whose whole wallet history is younger than this is "fresh"
+  max_fresh_share_pct: 10       # share of supply held by fresh wallets among the top 10
+  max_rugcheck_risk: 60         # RugCheck normalised score (higher = riskier); unavailable = unknown, not pass
+
+depth:                          # G3: a real Jupiter quote for our ticket, and selling it straight back
+  max_price_impact_pct: 3
+  max_round_trip_loss_pct: 8    # higher means a hidden tax or a thin pool
+  max_slippage_tolerance_pct: 3 # Jupiter's worst-case fill vs its quote; wide tolerance invites sandwich bots
+  max_requote_move_pct: 8       # skip if the price ran this much while the desk was deciding
+
+window:                         # G4: where the coin is in its move (5-minute candles, finalists only)
+  max_drop_from_high_pct: 25    # fading: price already this far below its recent high
+  max_return_30m_pct: 60        # parabolic: up this much in 30 minutes
+  min_candles: 8
+
+desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
+  enabled: true
+  model: claude-opus-5-5        # e.g. claude-sonnet-5-5 or claude-haiku-5-5 cost less per call
+  effort_analyst: low
+  effort_skeptic: medium
+  news: false                   # web search per finalist: better red-flag checks, costs more
+  max_tokens: 8000
+  daily_budget_usd: 3.0         # the desk stops (and the bot skips trades) after this much AI spend a day
+  max_reviews_per_hour: 8
+  min_conviction: 0.6
+  allowed_setups: [organic_trend, early_breakout]
+  allowed_windows: [early, running]
+  when_unavailable: skip        # skip | rules_only  (rules_only = trade on code gates alone when the desk is down)
+  price_in_per_mtok: 4.0        # check https://platform.claude.com pricing for the model you pick
+  price_out_per_mtok: 20.0
+  web_search_usd_per_call: 0.01
+
+plan:                           # the exit plan, written before entry (TP-first)
+  stop_atr_mult: 3.0
+  min_stop_pct: 15
+  max_stop_pct: 30
+  ladder_pct: [50, 100]         # take-profits: sell a share at +50% and at +100%
+  ladder_fraction: 0.33         # share of the original position sold at each take-profit
+  trail_pct: 30                 # after the first take-profit: sell the rest if price falls 30% from its peak
+  book_pct: 300                 # sell everything left at +300% (null = trail only)
+  volume_death_ratio: 0.25      # 5m volume below 25% of its level at entry...
+  volume_death_checks: 2        # ...on 2 checks in a row: the move died, exit
+  unprofitable_hours: 2         # time stop while the trade is still not profitable
+  max_hold_hours: 24
+  min_first_rung_r: 1.5         # first take-profit must be at least 1.5x the stop distance
+  round_trip_cost_pct: 2.0      # fees + slippage assumed for a full round trip
+
+risk:                           # hard limits; nothing overrides these
+  position_pct: 3               # each buy: this share of equity (assume every coin can go to zero)...
+  min_position_usd: 3
+  max_position_usd: 20          # ...but never more than this
+  max_open_positions: 4
+  max_exposure_pct: 25          # all open coins together
+  daily_loss_limit_pct: 6       # no new buys until 00:00 UTC
+  pause_after_losses: 5         # this many losing trades in a row...
+  pause_hours: 12               # ...pauses new buys this long
+  max_drawdown_pct: 25          # from the high: kill switch, sell everything, stop
+  max_consecutive_api_errors: 10
+  min_sol_for_fees: 0.05
+
+paper:
+  slippage_bps: 150             # extra cost per side on paper, for the seconds a live order takes
+
+track:                          # optional TRACK station: wallets whose buys become candidates (never blind copies)
+  enabled: false
+  max_signal_age_seconds: 90
+  exit_when_wallet_sells: true  # if the tracked wallet sells most of its bag, exit too
