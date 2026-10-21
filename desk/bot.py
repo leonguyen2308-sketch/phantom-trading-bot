@@ -47,6 +47,16 @@ RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC b
 ALERT_REPEAT_SECONDS = 300
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
 PENDING = object()  # _execute: sent, outcome unknown
+# Sources that only feed the SCANNER (finding and vetting new coins). Their failing can't hurt a coin already held, so
+# ten failures in a row pause buying and alert, and buying resumes by itself when they work again; only the sources
+# that watch positions and the wallet (prices, wallet, settle, swap, the loop itself) fire the kill switch.
+PAUSE_ONLY_SOURCES = ("scan", "jupiter", "dexscreener", "rpc", "watch")
+
+
+def _why(e: Exception) -> str:
+    """What to show for a failed request: the HTTP status when there is one (401 = a bad key, 429 = too many requests)."""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    return f"HTTP {code}" if code else type(e).__name__
 
 
 def _no_route(e: Exception) -> bool:
@@ -155,7 +165,12 @@ class Desk:
         self.errors[source] = self.errors.get(source, 0) + 1
         self._save_errors()
         log.warning("API error %d (%s): %s", self.errors[source], source, what)
-        if self.errors[source] >= self.cfg.risk.max_consecutive_api_errors and not self.kill.tripped:
+        limit = self.cfg.risk.max_consecutive_api_errors
+        if source in PAUSE_ONLY_SOURCES:
+            if self.errors[source] == limit:
+                self._feed("STOP", "CHIEF", f"{source} failed {limit} times in a row ({what}): no new buys until it works again; "
+                                            f"coins already held keep being managed", alert=True)
+        elif self.errors[source] >= limit and not self.kill.tripped:
             self.trip(f"{self.errors[source]} API errors in a row ({source}; last: {what})")
 
     def _api_ok(self, source: str) -> None:
@@ -230,6 +245,9 @@ class Desk:
             return "kill switch is on"
         if self.sell_only:
             return self.sell_only
+        down = sorted(s for s in PAUSE_ONLY_SOURCES if self.errors.get(s, 0) >= self.cfg.risk.max_consecutive_api_errors)
+        if down:
+            return f"{', '.join(down)} keeps failing (buying resumes by itself when it works)"
         if self.draining:
             return "shutting down"
         today = day_of(self.clock())
@@ -256,7 +274,7 @@ class Desk:
                     universe.setdefault(t.get("id"), t)
                 self._api_ok("jupiter")
             except Exception as e:
-                self._api_error(f"Jupiter {kind}: {type(e).__name__}", "jupiter")
+                self._api_error(f"Jupiter {kind}: {_why(e)}", "jupiter")
         try:
             for t in self.jup.recent():
                 universe.setdefault(t.get("id"), t)
@@ -281,7 +299,7 @@ class Desk:
             pairs = self.dex.tokens(mints)
             self._api_ok("dexscreener")
         except Exception as e:
-            self._api_error(f"DexScreener: {type(e).__name__}", "dexscreener")
+            self._api_error(f"DexScreener: {_why(e)}", "dexscreener")
             self.scan_state = "idle"
             return
         survivors = []
@@ -393,14 +411,14 @@ class Desk:
             self._kill("depth", mint, [f"no buy route ({e})"], cool=True)
             return "depth"
         except Exception as e:
-            self._api_error(f"quote: {type(e).__name__}", "jupiter")
+            self._api_error(f"quote: {_why(e)}", "jupiter")
             return "error"
         try:
             back = self.broker.quote_sell(mint, q.raw)
         except ValueError:
             back = None
         except Exception as e:
-            self._api_error(f"quote: {type(e).__name__}", "jupiter")
+            self._api_error(f"quote: {_why(e)}", "jupiter")
             return "error"
         self._api_ok("jupiter")
         df, why = funnel.g3_depth(q, back, info.decimals, cfg.depth)

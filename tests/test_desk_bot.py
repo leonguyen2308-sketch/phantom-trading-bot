@@ -811,3 +811,34 @@ def test_an_old_tripped_kill_switch_survives_the_upgrade(tmp_path):
     new = KillSwitch(tmp_path / "desk_live_kill.json")
     adopt_old_kill(tmp_path, new)
     assert new.tripped and "before the upgrade" in new.reason
+
+
+def test_a_scanner_only_outage_pauses_buying_and_resumes_by_itself_without_the_kill_switch(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+
+    class Down(Exception):
+        response = type("R", (), {"status_code": 401})()
+    real_top = d.jup.top
+
+    def broken(*a, **k):
+        raise Down()
+    d.jup.top = broken
+    for _ in range(12):
+        clock.t += 61
+        d.sweep()
+    assert not d.kill.tripped
+    assert d.errors["jupiter"] >= 10 and "jupiter keeps failing" in d._buys_blocked()
+    assert any("failed 10 times" in e["text"] for e in d.journal.events("paper", 20))
+    d.jup.top = real_top  # it works again
+    clock.t += 61
+    d.sweep()
+    assert d._buys_blocked() is None and len(d.journal.open_positions("paper")) == 1  # and the buy goes through
+
+
+def test_a_failed_request_is_reported_with_its_http_status():
+    from desk.bot import _why
+
+    class E(Exception):
+        response = type("R", (), {"status_code": 429})()
+    assert _why(E()) == "HTTP 429" and _why(ValueError()) == "ValueError"
