@@ -261,8 +261,9 @@ Xem kết quả bất cứ lúc nào:
 - Nếu sau 72 giờ paper vẫn lỗ: **đừng bật live**. Bot sẽ không cho bật đâu.
 
 **Hai chế độ chạy giả:**
-- **Chế độ hoạt động (đang bật):** Claude tắt, bot mua **mọi coin qua các kiểm tra bằng code**. Vào lệnh nhiều nhất, không tốn tiền Claude. Sổ shadow cho thấy kiểu này lỗ trung bình 15,7% mỗi lệnh.
-- **Chế độ có Claude:** mở `config/desk.yaml`, mục `desk:` đặt `enabled: true` và `when_unavailable: skip`. Claude có quyền từ chối nên bot mua rất ít. Sau khi sửa, chạy lại `scripts/install-desk-service.sh paper`.
+- **Chế độ có Claude (đang bật):** Claude xem từng coin qua các kiểm tra bằng code, chỉ loại coin `unclear`, và SKEPTIC vẫn có quyền chặn. Tốn khoảng 1–2 xu mỗi coin.
+- **Chế độ hoạt động:** mở `config/desk.yaml`, mục `desk:` đặt `enabled: false` và `when_unavailable: rules_only`. Claude tắt, bot mua **mọi coin qua các kiểm tra bằng code**, vào lệnh nhiều nhất và không tốn tiền Claude. Sổ shadow cho thấy kiểu này lỗ khoảng 11% mỗi lệnh.
+- Sau khi sửa file, chạy `git checkout -- config/desk.yaml` **trước** mỗi lần `git pull` để khỏi báo lỗi, rồi chạy lại `scripts/install-desk-service.sh paper`.
 
 ## R. Tạo ví riêng cho bot
 

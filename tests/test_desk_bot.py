@@ -1112,12 +1112,21 @@ def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_pat
     assert d.desk.calls == 2
 
 
-def test_the_shipped_config_runs_in_activity_mode_without_claude(tmp_path):
+def test_the_shipped_config_has_claude_on_and_a_down_desk_buys_nothing(tmp_path):
     cfg = _load_config("config/desk.yaml")
-    assert not cfg.desk.enabled and cfg.desk.when_unavailable == "rules_only"
-    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))  # no desk at all
+    assert cfg.desk.enabled and cfg.desk.when_unavailable == "skip"
+    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))  # the desk is down (no credit, no network)
     only_good(w)
     d.sweep()
-    assert len(d.journal.open_positions("paper")) == 1  # a coin that passes every code gate is bought
+    assert d.journal.open_positions("paper") == []  # never buys on rules alone by accident
+
+
+def test_activity_mode_is_buying_everything_that_passes_the_code_gates(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, desk=dataclasses.replace(cfg.desk, enabled=False, when_unavailable="rules_only"))
+    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))
+    only_good(w)
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
     (dec,) = d.journal.decisions("paper", 5)
     assert dec["action"] == "buy" and "rules alone" in dec["note"]

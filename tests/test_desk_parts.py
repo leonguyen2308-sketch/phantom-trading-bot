@@ -271,7 +271,7 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     for k in ("DESK_BOT_PRIVATE_KEY", "DESK_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL", "DESK_LIVE"):
         monkeypatch.delenv(k, raising=False)
     cfg = tmp_path / "desk.yaml"
-    cfg.write_text(re.sub(r"enabled: false[^\n]*\n", "enabled: true\n", open("config/desk.yaml").read(), count=1))  # the desk on
+    cfg.write_text(re.sub(r"enabled: (true|false)[^\n]*\n", "enabled: true\n", open("config/desk.yaml").read(), count=1))  # the desk on
     rep = golive.go_live_report(tmp_path, cfg)
     assert not rep.ok and not any(c.ok for c in rep.checks)
 
