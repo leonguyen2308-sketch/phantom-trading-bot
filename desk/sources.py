@@ -80,6 +80,8 @@ class LimitedClient(httpx.Client):
 
     RATES = {"api.jup.ag": 0.8, "api.jup.ag/execute": 5.0, "api.dexscreener.com": 4.0,
              "api.geckoterminal.com": 0.3, "api.rugcheck.xyz": 0.5}
+    # a throttled GeckoTerminal (candles and discovery only) must never hold the scanner for half a minute per call
+    MAX_WAIT = {"api.geckoterminal.com": 3.0}
 
     def __init__(self, rates: dict | None = None, sleep=time.sleep, share: LimitedClient | None = None, max_wait: float = 30.0, **kw):
         kw.setdefault("timeout", 20)
@@ -108,7 +110,8 @@ class LimitedClient(httpx.Client):
                 wait_s = 2.0
             if wait_s > 1e9:  # an epoch timestamp, not a delay
                 wait_s = max(0.0, wait_s - time.time())
-            self._sleep(min(max(wait_s, 0.5), self._max_wait))
+            host_cap = self.MAX_WAIT.get(urlparse(str(url)).hostname or "", self._max_wait)
+            self._sleep(min(max(wait_s, 0.5), self._max_wait, host_cap))
         return r
 
 

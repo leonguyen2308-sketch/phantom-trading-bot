@@ -47,7 +47,9 @@ RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC b
 ALERT_REPEAT_SECONDS = 300
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
 PENDING = object()  # _execute: sent, outcome unknown
-ATTENTION_SECONDS = 900  # how long "this coin was on a trending or new list" is remembered
+# how long a sighting on a list is remembered, per fact: a rank goes stale in minutes, "newly listed" stays true for the
+# hour (it must outlast the minimum age, or no coin could ever be both new and old enough)
+ATTENTION_TTL = {"trending_rank_gecko": 480, "trending_rank_jupiter": 240, "new_listing": 3600}
 # Data sources: when ten calls in a row fail (about 2.5 minutes), buying pauses and an alert goes out, and buying
 # resumes by itself when they work again. The kill switch is NOT used for these. A network or API outage can't be
 # helped by selling (the sells need the same network), a stop sells on the first fresh price anyway once the
@@ -103,7 +105,7 @@ class Desk:
         self._executing: set[int] = set()  # pending buy rows whose swap is being sent
         self._attn: dict[str, dict] = {}  # mint -> attention numbers + when seen
         self._pools: dict[str, str] = {}  # mint -> pool address from GeckoTerminal, when DexScreener has none
-        self._dead_lists: set[str] = set()  # extra Jupiter lists the server says do not exist
+        self._dead_lists: dict[str, float] = {}  # extra Jupiter lists the server says do not exist -> ask again after
         self._no_route_n: dict[int, int] = {}
         self._unpriced_n: dict[str, int] = {}
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sell") if threaded else None
@@ -287,7 +289,7 @@ class Desk:
         if self.sweeps % max(sc.extra_lists_every, 1) == 1 or sc.extra_lists_every <= 1:
             for spec in sc.extra_jupiter_lists:  # extra ways to find coins: best effort, never an error
                 kind, _, window = str(spec).partition("/")
-                if spec in self._dead_lists:
+                if self._dead_lists.get(spec, 0) > now:
                     continue
                 try:
                     for i, t in enumerate(self.jup.top(kind, window or "1h", 100)):
@@ -297,7 +299,7 @@ class Desk:
                 except Exception as e:
                     log.info("Jupiter %s unavailable: %s", spec, _why(e))
                     if getattr(getattr(e, "response", None), "status_code", None) in (400, 404):
-                        self._dead_lists.add(spec)  # no such list: stop asking
+                        self._dead_lists[spec] = now + 3600  # no such list: stop asking for an hour
         try:
             for t in self.jup.recent():
                 universe.setdefault(t.get("id"), t)
@@ -317,15 +319,21 @@ class Desk:
                             self._pools.setdefault(p["mint"], p["pool"])
                 except Exception as e:
                     log.info("GeckoTerminal %s unavailable: %s", kind, _why(e))
-        for m, a in attn.items():  # remembered between sweeps: lists are pulled every few sweeps, coins stay hot longer
-            self._attn[m] = {**a, "t": now}
-        for m in [m for m, a in self._attn.items() if now - a["t"] > ATTENTION_SECONDS]:
-            del self._attn[m]
+        for m, a in attn.items():  # remembered per field: lists are pulled every few sweeps, and each fact ages on its own
+            cur = self._attn.setdefault(m, {})
+            for f, v in a.items():
+                cur[f] = (v, now)
+        for m in list(self._attn):
+            cur = self._attn[m]
+            for f in [f for f, (_, t) in cur.items() if now - t > ATTENTION_TTL.get(f, 300)]:
+                del cur[f]
+            if not cur:
+                del self._attn[m]
         if len(self._pools) > 2000:
             self._pools.clear()
         universe.pop(None, None)
         universe.pop(USDC, None)
-        mints = list(universe)[: sc.max_universe]
+        mints = sorted(universe, key=lambda m: m not in attn)[: sc.max_universe]  # coins people are looking at survive the cap
         if not mints:
             self.scan_state = "idle"
             return
@@ -359,9 +367,12 @@ class Desk:
         checking = min(len(ready), sc.deep_checks_per_sweep)
         if checking or self.sweeps % 15 == 1:
             self._feed("SCAN", "SCOUT", f"swept {len(mints)} tokens · {len(survivors)} pass the market gate · checking {checking} more closely")
+        started = self.clock()
+        if ready and (self._buys_blocked() or not self.ticket_usd()[0]):
+            ready = []  # no buy is possible right now: don't spend RPC calls and a SKIP line on every coin
         for m, jt, dx, mf in ready[: sc.deep_checks_per_sweep]:
-            if self._stop.is_set():
-                break
+            if self._stop.is_set() or self.clock() - started > 0.8 * sc.interval_seconds:
+                break  # the rest wait for the next sweep, in priority order
             self.evaluate(m, "scout", jt, dx, mf)
         self.scan_state = "idle"
 
@@ -373,10 +384,8 @@ class Desk:
 
     def _attention(self, mint: str, now: float) -> dict:
         """What is known about how much attention a coin gets (numbers only), kept for 15 minutes after it was seen on a list."""
-        a = self._attn.get(mint)
-        if not a or now - a["t"] > ATTENTION_SECONDS:
-            return {}
-        return {k: v for k, v in a.items() if k != "t"}
+        seen = {f: v for f, (v, t) in self._attn.get(mint, {}).items() if now - t <= ATTENTION_TTL.get(f, 300)}
+        return {"trending_rank_gecko": None, "trending_rank_jupiter": None, "new_listing": 0, **seen}
 
     @staticmethod
     def _priority(mf: dict) -> float:
@@ -444,25 +453,44 @@ class Desk:
             self._feed("SKIP", "CHIEF", f"${symbol} passed the market gate, but {why_not}")
             return "no-room"
 
-        # G2: on-chain facts
-        try:
-            info = self._mint_info(mint)
-            top = self.holders.top(mint, pools=(dx or {}).get("_pair_addresses") or ())
-            fresh, _ = self.holders.fresh_share(top, cfg.holders.fresh_wallet_hours) if top else (None, 0)
-            self._api_ok("rpc")
-        except Exception as e:  # set aside for a while: one coin the node can't read must not build an error streak alone
-            self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
-            self._api_error(f"RPC: {type(e).__name__}: {e}", "rpc")
-            return "error"
-        rug = self.rug.summary(mint)
-        hf = {"top1_pct": round(top[0][1], 3) if top else None, "top10_pct": round(sum(p for _, p in top[:10]), 3) if top else None,
-              "fresh_share_pct": round(fresh, 3) if fresh is not None else None,
-              "rugcheck_risk": _num(rug.get("score_normalised")) if rug else None}
-        why = funnel.g2_onchain(info, hf, rug, cfg.holders)
-        if why:
+        # G2: on-chain facts, cheapest first. A coin that dies on its authorities costs one RPC call, on its holders
+        # about four, and only a survivor pays for the ten wallet-age lookups (the free RPC plan is 1M calls a month).
+        def die(why: list[str]) -> str:
             self._kill("onchain", mint, why, cool=True)
             self._feed("KILL", "SCOUT", f"${symbol} · on-chain: {'; '.join(why[:2])}")
             return "onchain"
+
+        def rpc_error(e: Exception) -> str:  # set aside: one coin the node can't read must not build an error streak alone
+            self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
+            self._api_error(f"RPC: {type(e).__name__}: {e}", "rpc")
+            return "error"
+        try:
+            info = self._mint_info(mint)
+        except Exception as e:
+            return rpc_error(e)
+        if why := funnel.g2_onchain(info, {}, None, cfg.holders):  # mint or freeze authority, Token-2022 extensions
+            return die(why)
+        try:
+            top = self.holders.top(mint, pools=(dx or {}).get("_pair_addresses") or ())
+        except Exception as e:
+            return rpc_error(e)
+        hf = {"top1_pct": round(top[0][1], 3) if top else None, "top10_pct": round(sum(p for _, p in top[:10]), 3) if top else None,
+              "fresh_share_pct": None, "rugcheck_risk": None}
+        if why := funnel.g2_onchain(info, hf, None, cfg.holders):  # concentration
+            return die(why)
+        rug = self.rug.summary(mint)
+        hf["rugcheck_risk"] = _num(rug.get("score_normalised")) if rug else None
+        if why := funnel.g2_onchain(info, hf, rug, cfg.holders):  # RugCheck
+            return die(why)
+        try:
+            fresh, _ = self.holders.fresh_share(top, cfg.holders.fresh_wallet_hours) if top else (None, 0)
+            self._api_ok("rpc")
+        except Exception as e:
+            return rpc_error(e)
+        hf["fresh_share_pct"] = round(fresh, 3) if fresh is not None else None
+        why = funnel.g2_onchain(info, hf, rug, cfg.holders)
+        if why:
+            return die(why)
         unknown = funnel.g2_unknowns(hf, rug)
         if unknown:  # can't see it, so can't buy it; looked at again later, not banned for hours
             self._kill("onchain", mint, unknown, cool=False)
@@ -501,8 +529,10 @@ class Desk:
         if pool:
             try:
                 candles = self.gecko.candles(pool, 5, 72, token=mint)
-            except Exception as e:
-                log.info("candles unavailable for %s: %s", symbol, type(e).__name__)
+            except Exception as e:  # GeckoTerminal throttled or down: not a verdict on the coin, so no window kill
+                log.info("candles unavailable for %s: %s", symbol, _why(e))
+                self._cool[mint] = now + 120
+                return "error"
         cf = candle_fields(candles, now)
         why = funnel.g4_window(cf, len(candles), cfg.window)
         entry = q.usd / (q.raw / 10 ** info.decimals) if q.raw else 0.0

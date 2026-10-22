@@ -1,12 +1,14 @@
 import dataclasses
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from desk.ai import DeskUnavailable, Opinion
 from desk.bot import Desk
 from desk.config import load_config as _load_config
 from desk.journal import Journal
+from desk.sources import LimitedClient
 from fomo.brokers import Fill, Quote
 from fomo.chain import MintInfo
 from fomo.swaps import Swap
@@ -964,3 +966,147 @@ def test_the_most_watched_coins_get_the_deep_checks_first():
     assert Desk._priority(watched) == pytest.approx(60 * 1.5 * 1.2 * 1.2)
     assert Desk._priority(watched) > Desk._priority({**quiet, "vol_accel": 1.5})
     assert Desk._priority({**quiet, "trending_rank_jupiter": 80}) == pytest.approx(60)  # far down the list: no bonus
+
+
+# ---------------------------------------------------------------- fixes from the review of the wider scan
+def test_attention_facts_age_on_their_own_and_are_never_lost_by_a_sweep_that_didnt_pull_them(tmp_path):
+    seen = []
+
+    class Watching(FakeDesk):
+        def review(self, legend, snap, plan, symbol="", mint="", links=None):
+            seen.append(snap)
+            return super().review(legend, snap, plan, symbol, mint, links)
+    d, w, clock = make(tmp_path, desk=Watching())
+    only_good(w)
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "", "rank": 3 if kind == "trending_pools" else 1}]
+    d.sweep()  # sweep 1 pulls GeckoTerminal; sweep 2 doesn't
+    assert (seen[0]["trending_rank_gecko"], seen[0]["new_listing"]) == (3, 1)
+    clock.t += 31
+    now = clock()
+    assert d._attention(GOOD, now)["trending_rank_gecko"] == 3 and d._attention(GOOD, now)["new_listing"] == 1  # still known
+    d.sweep()
+    d._cool.clear()
+    assert d._attention(GOOD, clock.t + 500)["trending_rank_gecko"] is None  # a rank goes stale after 8 minutes
+    assert d._attention(GOOD, clock.t + 500)["new_listing"] == 1  # "newly listed" lasts the hour
+    assert d._attention(GOOD, clock.t + 3700) == {"trending_rank_gecko": None, "trending_rank_jupiter": None, "new_listing": 0}
+
+
+def test_g2_is_cheapest_first(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    w.mint_auth.add(GOOD)
+    fresh_calls = []
+    real_fresh = d.holders.fresh_share
+    d.holders.fresh_share = lambda *a, **k: (fresh_calls.append(1), real_fresh(*a, **k))[1]
+    d.sweep()
+    assert w.calls["holders"] == 0 and not fresh_calls  # died on its mint authority: no holder lookups at all
+    w.mint_auth.clear()
+    d._cool.clear()
+    w.top10[GOOD] = 60.0
+    d.sweep()
+    assert w.calls["holders"] == 1 and not fresh_calls  # died on concentration: no wallet-age lookups
+    w.top10[GOOD] = 20.0
+    d._cool.clear()
+    d.sweep()
+    assert fresh_calls and len(d.journal.open_positions("paper")) == 1  # a survivor pays for everything
+
+
+def test_a_candle_failure_is_not_a_verdict_on_the_coin(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+
+    def down(*a, **k):
+        raise RuntimeError("429")
+    real = w.candles
+    w.candles = down
+    d.sweep()
+    assert not d.journal.open_positions("paper")
+    assert d.journal.funnel("paper", "2025-10-09").get("window", 0) == 0  # not counted as a window kill
+    assert 0 < d._cool[GOOD] - clock() <= 120  # looked at again in two minutes, not half an hour
+    w.candles = real
+    clock.t += 121
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+
+
+def test_geckoterminal_never_makes_a_call_wait_long_on_a_429():
+    slept = []
+    calls = []
+
+    def handler(req):
+        calls.append(req.url.host)
+        return httpx.Response(429, headers={"retry-after": "30"}) if len(calls) % 2 == 1 else httpx.Response(200, json={})
+    c = LimitedClient(rates={"api.geckoterminal.com": 1000.0, "api.jup.ag": 1000.0}, sleep=slept.append, transport=httpx.MockTransport(handler))
+    c.get("https://api.geckoterminal.com/api/v2/x")
+    c.get("https://api.jup.ag/tokens/v2/x")
+    assert [x for x in slept if x >= 1] == [3.0, 30.0]  # Gecko: capped at 3 s; Jupiter keeps the general cap
+
+
+def test_the_universe_cap_keeps_the_coins_people_are_looking_at(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, scan=dataclasses.replace(cfg.scan, max_universe=1))
+    d, w, clock = make(tmp_path, cfg=cfg)
+    w.top = lambda kind, window, limit: [] if kind == "toptrending" else [w.jt(BAD)]  # Jupiter's organic list has BAD first...
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "", "rank": 1}] if kind == "trending_pools" else []  # ...but people watch GOOD
+    d.sweep()
+    assert [p["mint"] for p in d.journal.open_positions("paper")] == [GOOD]
+
+
+def test_a_list_the_server_does_not_know_is_asked_again_after_an_hour(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+
+    class NotFound(Exception):
+        response = type("R", (), {"status_code": 404})()
+    asked = []
+    real_top = w.top
+
+    def top(kind, window, limit):
+        asked.append(kind)
+        if kind == "toptraded":
+            raise NotFound()
+        return real_top(kind, window, limit)
+    w.top = top
+    for i in range(7):
+        clock.t += 31
+        d.sweep()
+    assert asked.count("toptraded") == 1
+    clock.t += 3700
+    for i in range(3):
+        clock.t += 31
+        d.sweep()
+    assert asked.count("toptraded") == 2
+
+
+def test_no_buy_possible_means_no_deep_checks_and_no_skip_spam(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=1, position_pct=20, max_position_usd=50))
+    d, w, clock = make(tmp_path, cfg=cfg)
+    only_good(w)
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+    w.price[BAD] = 0.001
+    before = len(d.journal.events("paper", 500))
+    holders_before = w.calls["holders"]
+    for _ in range(5):
+        clock.t += 31
+        d.sweep()
+    skips = [e for e in d.journal.events("paper", 500)[: len(d.journal.events("paper", 500)) - before] if e["kind"] == "SKIP"]
+    assert w.calls["holders"] == holders_before and not skips
+
+
+def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_path):
+    class Slow(FakeDesk):
+        def review(self, *a, **k):
+            clock.t += 100  # a review that takes longer than the whole sweep interval
+            return super().review(*a, **k)
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=4, position_pct=10, max_position_usd=30))
+    d, w, clock = make(tmp_path, cfg=cfg, desk=Slow(verdict="block"))
+    w.price[BAD] = 0.001
+    d.sweep()
+    assert d.desk.calls == 1  # the second finalist waits for the next sweep
+    clock.t += 31
+    d._cool.pop(GOOD, None)
+    d.sweep()
+    assert d.desk.calls == 2
