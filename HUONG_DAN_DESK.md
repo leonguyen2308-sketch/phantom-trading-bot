@@ -4,7 +4,7 @@
 
 Ghép từ 3 video bạn gửi, nhưng sửa những chỗ nguy hiểm:
 
-1. **Lọc bằng code (cái phễu của video 2).** Mỗi phút bot quét vài trăm coin mới trên Jupiter và DexScreener rồi loại dần:
+1. **Lọc bằng code (cái phễu của video 2).** Cứ 30 giây bot quét tới 600 coin rồi loại dần. Nguồn coin gồm các danh sách của Jupiter (trending 5 phút và 1 giờ, giao dịch nhiều nhất, organic, coin mới), coin mới và coin được quan tâm của DexScreener, và danh sách **trending** cùng **new pools** của GeckoTerminal (xếp hạng những pool đang được nhiều người xem và giao dịch). Coin đang được nhiều người xem được kiểm tra trước, nhưng được quan tâm không giúp coin vượt qua cửa lọc nào. Bot cố ý **không đọc tên, mô tả hay link của coin**, vì đó là chỗ kẻ lừa đảo viết chữ để dụ cả người lẫn AI. Thay vào đó Claude thấy các con số: thứ hạng trending, coin mới lên sàn, số link mạng xã hội, số người giữ coin có đang tăng không.
    - **G1, số liệu thị trường:** tuổi pool, thanh khoản, vốn hoá, số lệnh, mua/bán, volume so với vốn hoá, chỉ số "organic".
    - **G2, on-chain:** dev còn quyền mint hay freeze không, top ví giữ bao nhiêu, có nhiều ví mới tạo không, điểm RugCheck.
    - **G3, độ sâu:** báo giá thật cho lệnh của bạn, và thử bán ngược lại xem lỗ bao nhiêu (bắt honeypot và thuế ẩn).
