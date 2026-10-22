@@ -492,6 +492,8 @@ class Desk:
         if why:
             return die(why)
         unknown = funnel.g2_unknowns(hf, rug)
+        if unknown and (reason := getattr(self.rug, "last_error", {}).get(mint)):
+            unknown = [u.replace("(unknown is not a pass)", f"({reason}; unknown is not a pass)") for u in unknown]
         if unknown:  # can't see it, so can't buy it; looked at again later, not banned for hours
             self._kill("onchain", mint, unknown, cool=False)
             self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60

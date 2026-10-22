@@ -218,6 +218,7 @@ class RugCheck:
     def __init__(self, http: httpx.Client, ttl: float = 900, fail_ttl: float = 120):
         self.http, self.ttl, self.fail_ttl = http, ttl, fail_ttl
         self._cache: dict[str, tuple[dict | None, float]] = {}
+        self.last_error: dict[str, str] = {}  # mint -> why the last read failed ("HTTP 429", "ConnectError", ...)
 
     def summary(self, mint: str) -> dict | None:
         hit = self._cache.get(mint)
@@ -227,8 +228,15 @@ class RugCheck:
             r = self.http.get(f"{RUGCHECK}/tokens/{mint}/report/summary")
             r.raise_for_status()
             s = r.json()
-        except (httpx.HTTPError, ValueError):
+        except (httpx.HTTPError, ValueError) as e:
             s = None  # unknown, never "pass"
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if len(self.last_error) > 2000:
+                self.last_error.clear()
+            self.last_error[mint] = f"HTTP {code}" if code else type(e).__name__
+            log.info("RugCheck unavailable for %s…: %s", mint[:6], self.last_error[mint])
+        else:
+            self.last_error.pop(mint, None)
         self._cache[mint] = (s, time.monotonic())
         return s
 

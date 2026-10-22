@@ -122,6 +122,7 @@ def test_rugcheck_down_is_unknown_and_cached():
 
     rc = RugCheck(client(handler))
     assert rc.summary("M") is None and rc.summary("M") is None and len(calls) == 1
+    assert rc.last_error["M"] == "HTTP 503"  # and it says why
 
 
 class FakeRpc:
