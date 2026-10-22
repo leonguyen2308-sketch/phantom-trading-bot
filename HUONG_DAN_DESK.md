@@ -260,6 +260,10 @@ Xem kết quả bất cứ lúc nào:
 - Bot **trừ tiền Claude** vào lãi paper khi chấm điểm. Lãi $6 mà tiền Claude $7 thì vẫn là lỗ.
 - Nếu sau 72 giờ paper vẫn lỗ: **đừng bật live**. Bot sẽ không cho bật đâu.
 
+**Hai chế độ chạy giả:**
+- **Chế độ hoạt động (đang bật):** Claude tắt, bot mua **mọi coin qua các kiểm tra bằng code**. Vào lệnh nhiều nhất, không tốn tiền Claude. Sổ shadow cho thấy kiểu này lỗ trung bình 15,7% mỗi lệnh.
+- **Chế độ có Claude:** mở `config/desk.yaml`, mục `desk:` đặt `enabled: true` và `when_unavailable: skip`. Claude có quyền từ chối nên bot mua rất ít. Sau khi sửa, chạy lại `scripts/install-desk-service.sh paper`.
+
 ## R. Tạo ví riêng cho bot
 
 1. Phantom → bấm avatar góc trên bên trái → **Add / Connect Wallet** → **Create New Account**.

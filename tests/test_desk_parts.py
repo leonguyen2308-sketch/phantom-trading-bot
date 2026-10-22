@@ -1,6 +1,7 @@
 """The desk's parts on their own: data sources (against a fake HTTP server), features, gates, go-live."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -270,7 +271,7 @@ def test_golive_refuses_until_every_check_passes(tmp_path, monkeypatch):
     for k in ("DESK_BOT_PRIVATE_KEY", "DESK_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL", "DESK_LIVE"):
         monkeypatch.delenv(k, raising=False)
     cfg = tmp_path / "desk.yaml"
-    cfg.write_text(open("config/desk.yaml").read())
+    cfg.write_text(re.sub(r"enabled: false[^\n]*\n", "enabled: true\n", open("config/desk.yaml").read(), count=1))  # the desk on
     rep = golive.go_live_report(tmp_path, cfg)
     assert not rep.ok and not any(c.ok for c in rep.checks)
 
@@ -317,7 +318,7 @@ def test_golive_refuses_a_losing_paper_record(tmp_path, monkeypatch):
 
 def test_golive_with_the_desk_off_judges_the_rules_only_book(tmp_path):
     cfg = tmp_path / "desk.yaml"
-    cfg.write_text(open("config/desk.yaml").read().replace("  enabled: true\n  model:", "  enabled: false\n  model:"))
+    cfg.write_text(re.sub(r"enabled: (true|false)[^\n]*\n", "enabled: false\n", open("config/desk.yaml").read(), count=1))
     j = Journal(tmp_path / "desk.sqlite")
     closed(j, "real", 5, 1.0)
     closed(j, "shadow", 30, -0.1)

@@ -21,8 +21,8 @@ def load_config(path="config/desk.yaml"):
     """The shipped gates and limits, with the desk's strict entry rules: these tests are about those rules, and
     config/desk.yaml may be running a looser experiment."""
     c = _load_config(path)
-    return dataclasses.replace(c, desk=dataclasses.replace(c.desk, min_conviction=0.6, allowed_setups=["organic_trend", "early_breakout"],
-                                                           allowed_windows=["early", "running"]))
+    return dataclasses.replace(c, desk=dataclasses.replace(c.desk, enabled=True, when_unavailable="skip", min_conviction=0.6,
+                                                           allowed_setups=["organic_trend", "early_breakout"], allowed_windows=["early", "running"]))
 
 GOOD, BAD = "Good" + "1" * 40, "Bad" + "1" * 41
 
@@ -1110,3 +1110,14 @@ def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_pat
     d._cool.pop(GOOD, None)
     d.sweep()
     assert d.desk.calls == 2
+
+
+def test_the_shipped_config_runs_in_activity_mode_without_claude(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    assert not cfg.desk.enabled and cfg.desk.when_unavailable == "rules_only"
+    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))  # no desk at all
+    only_good(w)
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1  # a coin that passes every code gate is bought
+    (dec,) = d.journal.decisions("paper", 5)
+    assert dec["action"] == "buy" and "rules alone" in dec["note"]
