@@ -48,7 +48,7 @@ cd ~/phantom-trading-bot
 - Ví **Phantom**.
 - Thẻ Visa hoặc Mastercard để nạp tiền API Claude, **tối thiểu $5**.
 - Tiền cho bot (chỉ cần khi bật live):
-  - **USDC trên mạng Solana**: chỉ số bạn chấp nhận mất hết, ví dụ $100. Với $100, mỗi lệnh là $3 và tối đa 4 coin cùng lúc.
+  - **USDC trên mạng Solana**: chỉ số bạn chấp nhận mất hết, ví dụ $100. Với $100, mỗi lệnh là $3 và tối đa 10 coin cùng lúc.
   - Khoảng **0,1 SOL** để trả phí mạng.
 
 ## B. Mở Terminal
@@ -336,9 +336,9 @@ scripts/install-desk-service.sh live
 
 | Chuyện gì xảy ra | Bot làm gì |
 |---|---|
-| Mỗi lệnh | Chỉ 3% số dư, tối thiểu $3, tối đa $20. Tối đa 4 coin, tổng không quá 25% số dư |
-| Lỗ 6% trong ngày | Ngừng mua đến 7 giờ sáng hôm sau, giờ Việt Nam (00:00 UTC). Vẫn quản lý coin đang giữ |
-| Thua 5 lệnh liên tiếp | Ngừng mua 12 giờ |
+| Mỗi lệnh | Chỉ 3% số dư, tối thiểu $3, tối đa $20. Tối đa 10 coin, tổng không quá 30% số dư |
+| Lỗ 10% trong ngày | Ngừng mua đến 7 giờ sáng hôm sau, giờ Việt Nam (00:00 UTC). Vẫn quản lý coin đang giữ |
+| Thua 8 lệnh liên tiếp | Ngừng mua 3 giờ |
 | Số dư giảm 25% so với đỉnh | **Kill switch**: bán hết, dừng hẳn |
 | Mất mạng, hoặc Jupiter, DexScreener, RPC, giá, ví lỗi liên tục khoảng 2–3 phút | Ngừng mua và báo. Tự chạy lại khi hết lỗi. Coin đang giữ không bị bán hàng loạt, các lệnh cắt lỗ chạy lại ngay khi có mạng |
 | Mua lỗi liên tục 10 lần, hoặc vòng lặp của bot bị lỗi | **Kill switch** |

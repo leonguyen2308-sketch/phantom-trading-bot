@@ -8,7 +8,7 @@ scan:
   max_universe: 600             # cap on tokens looked at per sweep
   deep_checks_per_sweep: 6      # tokens per sweep that get on-chain holder checks (RPC credits); the most active and most watched go first
   recheck_killed_minutes: 360   # a token killed on facts (authority, holders, rug) is not re-checked for this long
-  recheck_passed_minutes: 30    # a finalist the desk looked at is not re-sent to the desk for this long
+  recheck_passed_minutes: 10    # a finalist the desk looked at is not re-sent to the desk for this long (was 30)
   extra_jupiter_lists: [toptrending/1h, toptraded/1h, toporganicscore/5m]   # more ways to find coins people are trading
   extra_lists_every: 3          # pull those every 3rd sweep (Jupiter's free key is about 1 request a second)
   gecko_discovery_every: 4      # GeckoTerminal's Solana trending and newest pools every 4th sweep; 0 = off
@@ -19,36 +19,36 @@ gates:                          # G1: cheap numbers already in hand (Jupiter + D
   min_liquidity_usd: 12000      # graduated tokens with a real pool only; bonding-curve coins are skipped (was 25000: wider net)
   min_market_cap_usd: 70000     # was 150000: wider net, smaller coins reach the desk (riskier: Claude still vetoes)
   max_market_cap_usd: 30000000
-  min_txns_1h: 120              # was 200: wider net
-  min_buy_sell_ratio_1h: 0.9    # buys / sells over the last hour
+  min_txns_1h: 60               # was 200: easier to pass (paper experiment)
+  min_buy_sell_ratio_1h: 0.7    # buys / sells over the last hour (was 0.9)
   max_price_change_1h_pct: 30   # skip a coin that rose more than this in the last hour (was 120)
   min_price_change_1h_pct: -25  # nor one that is dumping
-  min_organic_score: 30         # Jupiter's 0-100 organic-activity score (when present)
-  max_jupiter_top_holders_pct: 45
-  max_dev_balance_pct: 10
-  min_vol_to_mcap_1h: 0.05       # an hour's volume vs market cap: too low = nobody trading it...
+  min_organic_score: 15         # Jupiter's 0-100 organic-activity score (when present) (was 30)
+  max_jupiter_top_holders_pct: 60   # was 45
+  max_dev_balance_pct: 20           # was 10
+  min_vol_to_mcap_1h: 0.02       # an hour's volume vs market cap: too low = nobody trading it... (was 0.05)
   max_vol_to_mcap_1h: 3.0        # ...too high = likely wash trading
 
 holders:                        # G2: on-chain facts (RPC), only for G1 survivors
   require_mint_authority_revoked: true
   require_freeze_authority_revoked: true
   blocked_token2022_extensions: [transferHook, permanentDelegate, nonTransferable, transferFeeConfig, defaultAccountState, pausableConfig]
-  max_top1_pct: 8               # largest real wallet (pools and burns excluded)
-  max_top10_pct: 30
+  max_top1_pct: 12              # largest real wallet (pools and burns excluded) (was 8)
+  max_top10_pct: 45             # was 30
   fresh_wallet_hours: 48        # a holder whose whole wallet history is younger than this is "fresh"
-  max_fresh_share_pct: 10       # share of supply held by fresh wallets among the top 10
-  max_rugcheck_risk: 60         # RugCheck normalised score (higher = riskier); unavailable = unknown, not pass
+  max_fresh_share_pct: 20       # share of supply held by fresh wallets among the top 10 (was 10)
+  max_rugcheck_risk: 75         # RugCheck normalised score (higher = riskier) (was 60); unavailable = unknown, not pass
 
 depth:                          # G3: a real Jupiter quote for our ticket, and selling it straight back
   max_price_impact_pct: 3
-  max_round_trip_loss_pct: 8    # higher means a hidden tax or a thin pool
+  max_round_trip_loss_pct: 12   # higher means a hidden tax or a thin pool (was 8)
   max_slippage_tolerance_pct: 3 # Jupiter's worst-case fill vs its quote; wide tolerance invites sandwich bots
   max_requote_move_pct: 8       # skip if the price ran this much while the desk was deciding
 
 window:                         # G4: where the coin is in its move (5-minute candles, finalists only)
-  max_drop_from_high_pct: 25    # fading: price already this far below its recent high
-  max_return_30m_pct: 60        # parabolic: up this much in 30 minutes
-  min_candles: 8
+  max_drop_from_high_pct: 35    # fading: price already this far below its recent high (was 25)
+  max_return_30m_pct: 100       # parabolic: up this much in 30 minutes (was 60)
+  min_candles: 6                # was 8
 
 desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
   enabled: true
@@ -90,11 +90,11 @@ risk:                           # hard limits; nothing overrides these
   position_pct: 3               # each buy: this share of equity (assume every coin can go to zero)...
   min_position_usd: 3
   max_position_usd: 20          # ...but never more than this
-  max_open_positions: 4
-  max_exposure_pct: 25          # all open coins together
-  daily_loss_limit_pct: 6       # no new buys until 00:00 UTC
-  pause_after_losses: 5         # this many losing trades in a row...
-  pause_hours: 12               # ...pauses new buys this long
+  max_open_positions: 10        # was 4
+  max_exposure_pct: 30          # all open coins together (was 25)
+  daily_loss_limit_pct: 10      # no new buys until 00:00 UTC (was 6)
+  pause_after_losses: 8         # this many losing trades in a row... (was 5)
+  pause_hours: 3                # ...pauses new buys this long (was 12)
   max_drawdown_pct: 25          # from the high: kill switch, sell everything, stop
   max_consecutive_api_errors: 10
   min_sol_for_fees: 0.05

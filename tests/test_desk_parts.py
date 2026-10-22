@@ -255,7 +255,8 @@ def test_g3_depth():
 
 
 def test_g4_window_and_the_six_checks():
-    why = funnel.g4_window({"drop_from_high_pct": 40, "return_30m_pct": 80}, 3, CFG.window)
+    w = CFG.window
+    why = funnel.g4_window({"drop_from_high_pct": w.max_drop_from_high_pct + 5, "return_30m_pct": w.max_return_30m_pct + 20}, w.min_candles - 1, w)
     assert len(why) == 3
     snap = {"round_trip_loss_pct": 1.0, "top10_pct": 20.0, "vol_to_mcap_1h": 0.3, "fresh_share_pct": 2.0, "drop_from_high_pct": 5.0,
             "rugcheck_risk": 10.0}

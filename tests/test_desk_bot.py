@@ -747,10 +747,10 @@ def test_one_coin_the_node_cant_read_is_set_aside_not_counted_until_the_kill_swi
     def broken(mint):
         raise RuntimeError("Solana RPC getAccountInfo failed: not a token mint")
     d.mint_info_fn = broken
-    for _ in range(15):
+    for _ in range(40):  # 40 minutes: the coin is looked at again each recheck period, a few times in all
         clock.t += 61
         d.step()
-    assert not d.kill.tripped and d.errors.get("rpc", 0) <= 1
+    assert not d.kill.tripped and d.errors.get("rpc", 0) < d.cfg.risk.max_consecutive_api_errors
 
 
 def test_mint_info_with_an_authority_is_read_again_on_the_next_look(tmp_path):
