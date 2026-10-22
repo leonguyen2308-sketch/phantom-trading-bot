@@ -27,6 +27,7 @@ DEXSCREENER = "https://api.dexscreener.com"
 GECKO = "https://api.geckoterminal.com/api/v2"
 RUGCHECK = "https://api.rugcheck.xyz/v1"
 BURN = "1nc1nerator11111111111111111111111111111111"
+WSOL = "So11111111111111111111111111111111111111112"
 
 # Programs whose accounts hold a token's pool reserves (the pool account owns the vault): pump.fun bonding curve,
 # PumpSwap, Raydium CLMM, Orca Whirlpool, Meteora DLMM, Meteora DAMM v1 and its vault program.
@@ -78,7 +79,7 @@ class LimitedClient(httpx.Client):
     gets its own client with a short `max_wait`, so a rate-limited scanner never holds up a stop loss for long."""
 
     RATES = {"api.jup.ag": 0.8, "api.jup.ag/execute": 5.0, "api.dexscreener.com": 4.0,
-             "api.geckoterminal.com": 0.15, "api.rugcheck.xyz": 0.5}
+             "api.geckoterminal.com": 0.3, "api.rugcheck.xyz": 0.5}
 
     def __init__(self, rates: dict | None = None, sleep=time.sleep, share: LimitedClient | None = None, max_wait: float = 30.0, **kw):
         kw.setdefault("timeout", 20)
@@ -191,6 +192,23 @@ class GeckoTerminal:
         r.raise_for_status()
         rows = (((r.json() or {}).get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
         return sorted(([float(v) for v in row[:6]] for row in rows if len(row) >= 6), key=lambda x: x[0])
+
+    def pools(self, kind: str) -> list[dict]:
+        """GeckoTerminal's Solana "trending_pools" (what people are viewing and trading) or "new_pools" (the newest),
+        in its order: [{"mint", "pool", "rank"}, ...], rank 1 first. Anything unreadable is left out, never guessed."""
+        r = self.http.get(f"{GECKO}/networks/solana/{kind}", headers={"accept": "application/json"})
+        r.raise_for_status()
+        out, seen = [], set()
+        for p in (r.json() or {}).get("data") or []:
+            if not isinstance(p, dict):
+                continue
+            tid = ((((p.get("relationships") or {}).get("base_token") or {}).get("data") or {}).get("id")) or ""
+            mint = tid.removeprefix("solana_") if isinstance(tid, str) else ""
+            if not 32 <= len(mint) <= 44 or mint in seen or mint == WSOL:
+                continue
+            seen.add(mint)
+            out.append({"mint": mint, "pool": ((p.get("attributes") or {}).get("address")) or "", "rank": len(out) + 1})
+        return out
 
 
 class RugCheck:

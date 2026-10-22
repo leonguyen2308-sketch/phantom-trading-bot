@@ -47,6 +47,7 @@ RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC b
 ALERT_REPEAT_SECONDS = 300
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
 PENDING = object()  # _execute: sent, outcome unknown
+ATTENTION_SECONDS = 900  # how long "this coin was on a trending or new list" is remembered
 # Data sources: when ten calls in a row fail (about 2.5 minutes), buying pauses and an alert goes out, and buying
 # resumes by itself when they work again. The kill switch is NOT used for these. A network or API outage can't be
 # helped by selling (the sells need the same network), a stop sells on the first fresh price anyway once the
@@ -100,6 +101,9 @@ class Desk:
         self._inflight: set[int] = set()  # positions whose sell is running
         self._queued: set[int] = set()  # positions whose sell is waiting for a worker
         self._executing: set[int] = set()  # pending buy rows whose swap is being sent
+        self._attn: dict[str, dict] = {}  # mint -> attention numbers + when seen
+        self._pools: dict[str, str] = {}  # mint -> pool address from GeckoTerminal, when DexScreener has none
+        self._dead_lists: set[str] = set()  # extra Jupiter lists the server says do not exist
         self._no_route_n: dict[int, int] = {}
         self._unpriced_n: dict[str, int] = {}
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="sell") if threaded else None
@@ -267,16 +271,33 @@ class Desk:
         self.sweeps += 1
         self.scan_state = "sweeping"
         universe: dict[str, dict | None] = {}
+        attn: dict[str, dict] = {}  # numbers about attention per coin, from where it was found
         lists = [("toptrending", "5m")]
         if self.sweeps % max(sc.organic_every, 1) == 1 or sc.organic_every <= 1:
             lists.append(("toporganicscore", "1h"))
-        for kind, window in lists:
+        for kind, window in lists:  # the main lists: a failure here counts toward the data-source pause
             try:
-                for t in self.jup.top(kind, window, 100):
+                for i, t in enumerate(self.jup.top(kind, window, 100)):
                     universe.setdefault(t.get("id"), t)
+                    if kind == "toptrending":
+                        self._rank(attn, t.get("id"), "trending_rank_jupiter", i + 1)
                 self._api_ok("jupiter")
             except Exception as e:
                 self._api_error(f"Jupiter {kind}: {_why(e)}", "jupiter")
+        if self.sweeps % max(sc.extra_lists_every, 1) == 1 or sc.extra_lists_every <= 1:
+            for spec in sc.extra_jupiter_lists:  # extra ways to find coins: best effort, never an error
+                kind, _, window = str(spec).partition("/")
+                if spec in self._dead_lists:
+                    continue
+                try:
+                    for i, t in enumerate(self.jup.top(kind, window or "1h", 100)):
+                        universe.setdefault(t.get("id"), t)
+                        if kind == "toptrending":
+                            self._rank(attn, t.get("id"), "trending_rank_jupiter", i + 1)
+                except Exception as e:
+                    log.info("Jupiter %s unavailable: %s", spec, _why(e))
+                    if getattr(getattr(e, "response", None), "status_code", None) in (400, 404):
+                        self._dead_lists.add(spec)  # no such list: stop asking
         try:
             for t in self.jup.recent():
                 universe.setdefault(t.get("id"), t)
@@ -285,6 +306,23 @@ class Desk:
         if self.sweeps % max(sc.dexscreener_every, 1) == 1 or sc.dexscreener_every <= 1:
             for m in self.dex.discovered():
                 universe.setdefault(m, None)
+        pools = getattr(self.gecko, "pools", None)
+        if pools and sc.gecko_discovery_every > 0 and self.sweeps % sc.gecko_discovery_every == 1 % sc.gecko_discovery_every:
+            for kind, field in (("trending_pools", "trending_rank_gecko"), ("new_pools", "new_listing")):
+                try:
+                    for p in pools(kind):
+                        universe.setdefault(p["mint"], None)
+                        self._rank(attn, p["mint"], field, p["rank"] if field != "new_listing" else 1)
+                        if p.get("pool"):
+                            self._pools.setdefault(p["mint"], p["pool"])
+                except Exception as e:
+                    log.info("GeckoTerminal %s unavailable: %s", kind, _why(e))
+        for m, a in attn.items():  # remembered between sweeps: lists are pulled every few sweeps, coins stay hot longer
+            self._attn[m] = {**a, "t": now}
+        for m in [m for m, a in self._attn.items() if now - a["t"] > ATTENTION_SECONDS]:
+            del self._attn[m]
+        if len(self._pools) > 2000:
+            self._pools.clear()
         universe.pop(None, None)
         universe.pop(USDC, None)
         mints = list(universe)[: sc.max_universe]
@@ -308,7 +346,7 @@ class Desk:
         for m in mints:
             self._count("universe", m)
             jt, dx = universe.get(m), pairs.get(m)
-            mf = market_fields(jt, dx, now)
+            mf = {**market_fields(jt, dx, now), **self._attention(m, now)}
             why = funnel.g1_market(mf, (dx or {}).get("dexId", ""), jt, self.cfg.gates)
             if why:
                 self._kill("market", m, why, cool=False)
@@ -317,7 +355,7 @@ class Desk:
             survivors.append((m, jt, dx, mf))
         held = {p["mint"] for p in self.journal.open_positions(self.mode)} | {r["mint"] for r in self.journal.pending(self.mode)}
         ready = [s for s in survivors if self._cool.get(s[0], 0) <= now and s[0] not in held]
-        ready.sort(key=lambda s: ((s[3].get("vol_accel") or 0) * (s[3].get("organic_score") or 50)), reverse=True)
+        ready.sort(key=lambda s: self._priority(s[3]), reverse=True)
         checking = min(len(ready), sc.deep_checks_per_sweep)
         if checking or self.sweeps % 15 == 1:
             self._feed("SCAN", "SCOUT", f"swept {len(mints)} tokens · {len(survivors)} pass the market gate · checking {checking} more closely")
@@ -326,6 +364,33 @@ class Desk:
                 break
             self.evaluate(m, "scout", jt, dx, mf)
         self.scan_state = "idle"
+
+    @staticmethod
+    def _rank(attn: dict, mint, field: str, rank: int) -> None:
+        if mint:
+            a = attn.setdefault(mint, {})
+            a[field] = min(rank, a.get(field, rank)) if field != "new_listing" else 1
+
+    def _attention(self, mint: str, now: float) -> dict:
+        """What is known about how much attention a coin gets (numbers only), kept for 15 minutes after it was seen on a list."""
+        a = self._attn.get(mint)
+        if not a or now - a["t"] > ATTENTION_SECONDS:
+            return {}
+        return {k: v for k, v in a.items() if k != "t"}
+
+    @staticmethod
+    def _priority(mf: dict) -> float:
+        """Who gets the deep checks first when there are more finalists than slots: the most active coins, and those
+        more people are looking at (trending on GeckoTerminal or Jupiter, or newly listed). Order only: it never lets a
+        coin past a gate."""
+        score = (mf.get("vol_accel") or 0) * (mf.get("organic_score") or 50)
+        if mf.get("trending_rank_gecko"):
+            score *= 1.5
+        if mf.get("trending_rank_jupiter") and mf["trending_rank_jupiter"] <= 30:
+            score *= 1.2
+        if mf.get("new_listing"):
+            score *= 1.2
+        return score
 
     def _evaluate_mint(self, mint: str, station: str, source_wallet: str | None = None) -> None:
         """A TRACK signal: fetch the market numbers for one mint, then run the same funnel."""
@@ -431,7 +496,7 @@ class Desk:
         self._count("depth", mint)
 
         # G4: where it is in its move
-        pool = (dx or {}).get("pairAddress") or ((jt or {}).get("firstPool") or {}).get("id")
+        pool = (dx or {}).get("pairAddress") or ((jt or {}).get("firstPool") or {}).get("id") or self._pools.get(mint)
         candles = []
         if pool:
             try:

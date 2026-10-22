@@ -382,3 +382,20 @@ def test_settle_pages_back_skips_booked_swaps_and_never_guesses():
     flood = [(f"y{i}", 2000 + i, {"OTHER": 1}) for i in range(300)][::-1]
     with pytest.raises(RuntimeError):
         _broker(flood).settle("M", "sell", 1000)  # can't see back far enough: unknown, not "did not land"
+
+
+def test_gecko_pools_reads_the_json_api_shape_and_skips_what_it_cannot_read():
+    def pool(mint_id, addr):
+        return {"id": f"solana_{addr}", "attributes": {"address": addr}, "relationships": {"base_token": {"data": {"id": mint_id}}}}
+    good1, good2 = "A" * 43, "B" * 43
+    body = {"data": [pool(f"solana_{good1}", "P1"), pool("solana_short", "P2"), pool(f"solana_{good1}", "P3"),  # too short, duplicate
+                     {"id": "x"}, "junk", pool("solana_So11111111111111111111111111111111111111112", "P4"), pool(f"solana_{good2}", "P5")]}
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        return httpx.Response(200, json=body)
+    out = GeckoTerminal(client(handler)).pools("trending_pools")
+    assert seen == ["/api/v2/networks/solana/trending_pools"]
+    assert out == [{"mint": good1, "pool": "P1", "rank": 1}, {"mint": good2, "pool": "P5", "rank": 2}]
+    assert GeckoTerminal(client(lambda r: httpx.Response(200, json={}))).pools("new_pools") == []

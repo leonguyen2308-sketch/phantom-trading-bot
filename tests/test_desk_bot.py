@@ -896,3 +896,71 @@ def test_the_shipped_experiment_skips_unclear_and_a_30_percent_hour_and_buys_the
     w.tokens = lambda mints: {m: {**p, "priceChange": {**p["priceChange"], "h1": 31}} for m, p in real(mints).items()}
     d.sweep()
     assert d.journal.open_positions("paper") == [] and d.desk.calls == 0
+
+
+# ---------------------------------------------------------------- wider and faster scan
+def test_the_scan_is_faster_and_wider_than_before():
+    c = _load_config("config/desk.yaml")
+    assert c.scan.interval_seconds == 30 and c.scan.max_universe == 600 and c.scan.deep_checks_per_sweep == 6
+    assert "toptraded/1h" in c.scan.extra_jupiter_lists and c.scan.gecko_discovery_every == 4
+
+
+def test_gecko_trending_and_new_pools_join_the_universe_and_their_ranks_reach_the_snapshot(tmp_path):
+    seen = []
+
+    class Watching(FakeDesk):
+        def review(self, legend, snap, plan, symbol="", mint="", links=None):
+            seen.append(snap)
+            return super().review(legend, snap, plan, symbol, mint, links)
+    d, w, clock = make(tmp_path, desk=Watching())
+    only_good(w)
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "pool" + GOOD[:6], "rank": 3 if kind == "trending_pools" else 1}]
+    d.gecko = w
+    d.sweep()
+    (snap,) = seen
+    assert snap["trending_rank_gecko"] == 3 and snap["new_listing"] == 1
+    assert "trending_rank_gecko" in __import__("desk.features", fromlist=["LEGEND"]).LEGEND
+
+
+def test_a_coin_only_gecko_knows_is_found_and_checked(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    w.top = lambda kind, window, limit: []  # Jupiter's lists are empty; only GeckoTerminal points at the coin
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "", "rank": 1}] if kind == "trending_pools" else []
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+
+
+def test_discovery_trouble_is_quiet_and_dead_lists_are_dropped(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+
+    class NotFound(Exception):
+        response = type("R", (), {"status_code": 404})()
+    calls = []
+    real_top = w.top
+
+    def top(kind, window, limit):
+        calls.append((kind, window))
+        if kind == "toptraded":
+            raise NotFound()
+        return real_top(kind, window, limit)
+
+    def pools(kind):
+        raise RuntimeError("GeckoTerminal down")
+    w.top, w.pools = top, pools
+    for _ in range(7):
+        clock.t += 31
+        d.sweep()
+    assert not d.kill.tripped and d.errors.get("jupiter", 0) == 0 and not d.errors.get("scan")
+    assert [c for c in calls if c[0] == "toptraded"] == [("toptraded", "1h")]  # asked once, then dropped
+    assert any(c == ("toptrending", "1h") for c in calls)  # the other extra lists still run
+
+
+def test_the_most_watched_coins_get_the_deep_checks_first():
+    from desk.bot import Desk
+    quiet = {"vol_accel": 1.0, "organic_score": 60}
+    watched = {**quiet, "trending_rank_gecko": 4, "trending_rank_jupiter": 9, "new_listing": 1}
+    assert Desk._priority(watched) == pytest.approx(60 * 1.5 * 1.2 * 1.2)
+    assert Desk._priority(watched) > Desk._priority({**quiet, "vol_accel": 1.5})
+    assert Desk._priority({**quiet, "trending_rank_jupiter": 80}) == pytest.approx(60)  # far down the list: no bonus

@@ -2,13 +2,16 @@
 # (./desk.sh approve) and refuses to start, or stops, if it changes. Percentages are numbers (25 = 25%).
 
 scan:
-  interval_seconds: 60          # how often the Scout sweeps the universe
+  interval_seconds: 30          # how often the Scout sweeps the universe
   organic_every: 5              # also pull Jupiter's top-organic list every N sweeps
   dexscreener_every: 2          # and DexScreener's new profiles/boosts every N sweeps
-  max_universe: 300             # cap on tokens looked at per sweep
-  deep_checks_per_sweep: 4      # tokens per sweep that get on-chain holder checks (RPC credits)
+  max_universe: 600             # cap on tokens looked at per sweep
+  deep_checks_per_sweep: 6      # tokens per sweep that get on-chain holder checks (RPC credits); the most active and most watched go first
   recheck_killed_minutes: 360   # a token killed on facts (authority, holders, rug) is not re-checked for this long
   recheck_passed_minutes: 30    # a finalist the desk looked at is not re-sent to the desk for this long
+  extra_jupiter_lists: [toptrending/1h, toptraded/1h, toporganicscore/5m]   # more ways to find coins people are trading
+  extra_lists_every: 3          # pull those every 3rd sweep (Jupiter's free key is about 1 request a second)
+  gecko_discovery_every: 4      # GeckoTerminal's Solana trending and newest pools every 4th sweep; 0 = off
 
 gates:                          # G1: cheap numbers already in hand (Jupiter + DexScreener batches)
   min_age_minutes: 20           # skip the first minutes after the pool opens (insiders' and snipers' zone)

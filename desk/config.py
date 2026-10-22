@@ -19,6 +19,9 @@ class Scan:
     deep_checks_per_sweep: int
     recheck_killed_minutes: float
     recheck_passed_minutes: float
+    extra_jupiter_lists: list  # more discovery lists, "kind/window", pulled every extra_lists_every sweeps
+    extra_lists_every: int
+    gecko_discovery_every: int  # GeckoTerminal's Solana trending and new pools, every N sweeps (0 = off)
 
 
 @dataclass(frozen=True)

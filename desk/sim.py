@@ -166,6 +166,11 @@ class SimGecko:
     def __init__(self, m: SimMarket):
         self.m = m
 
+    def pools(self, kind):
+        live = sorted((t for t in self.m.tokens.values() if not t.dead),
+                      key=(lambda t: -t.born) if kind == "new_pools" else (lambda t: -sum(h[2] for h in self.m._window(t, 5))))
+        return [{"mint": t.mint, "pool": "pool" + t.mint[:8], "rank": i + 1} for i, t in enumerate(live[:20])]
+
     def candles(self, pool, minutes=5, limit=72, token=None):
         tok = next((t for t in self.m.tokens.values() if "pool" + t.mint[:8] == pool), None)
         return self.m.candles(tok, minutes)[-limit:] if tok else []
