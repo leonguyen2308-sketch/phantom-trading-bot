@@ -18,7 +18,7 @@ gates:                          # G1: cheap numbers already in hand (Jupiter + D
   max_market_cap_usd: 30000000
   min_txns_1h: 120              # was 200: wider net
   min_buy_sell_ratio_1h: 0.9    # buys / sells over the last hour
-  max_price_change_1h_pct: 120  # don't chase a coin that already ran this much in an hour
+  max_price_change_1h_pct: 30   # skip a coin that rose more than this in the last hour (was 120)
   min_price_change_1h_pct: -25  # nor one that is dumping
   min_organic_score: 30         # Jupiter's 0-100 organic-activity score (when present)
   max_jupiter_top_holders_pct: 45
@@ -57,9 +57,12 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
   daily_budget_usd: 3.0         # the desk stops (and the bot skips trades) after this much AI spend a day, per mode
                                 # (a paper run alongside live has its own; ./desk.sh desk-test counts as paper)
   max_reviews_per_hour: 8
-  min_conviction: 0.6
-  allowed_setups: [organic_trend, early_breakout]
-  allowed_windows: [early, running]
+  # Experiment (paper): the desk skips a coin only when the analyst calls it "unclear" (and the code gates above skip
+  # one that rose over 30% in the hour). Every other pattern may be bought, at the skeptic's size. The strict rules
+  # were min_conviction 0.6, setups [organic_trend, early_breakout], windows [early, running].
+  min_conviction: 0.0
+  allowed_setups: [organic_trend, early_breakout, late_chase, single_driver, wash_or_bot, fading]
+  allowed_windows: [early, running, late, exhausted]
   when_unavailable: skip        # skip | rules_only  (rules_only = trade on code gates alone when the desk is down)
   price_in_per_mtok: 4.0        # check https://platform.claude.com pricing for the model you pick
   price_out_per_mtok: 20.0

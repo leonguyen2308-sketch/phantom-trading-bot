@@ -5,7 +5,7 @@ import pytest
 
 from desk.ai import DeskUnavailable, Opinion
 from desk.bot import Desk
-from desk.config import load_config
+from desk.config import load_config as _load_config
 from desk.journal import Journal
 from fomo.brokers import Fill, Quote
 from fomo.chain import MintInfo
@@ -13,6 +13,15 @@ from fomo.swaps import Swap
 from phantom.risk import KillSwitch
 
 T0 = 1_760_000_000.0
+
+
+def load_config(path="config/desk.yaml"):
+    """The shipped gates and limits, with the desk's strict entry rules: these tests are about those rules, and
+    config/desk.yaml may be running a looser experiment."""
+    c = _load_config(path)
+    return dataclasses.replace(c, desk=dataclasses.replace(c.desk, min_conviction=0.6, allowed_setups=["organic_trend", "early_breakout"],
+                                                           allowed_windows=["early", "running"]))
+
 GOOD, BAD = "Good" + "1" * 40, "Bad" + "1" * 41
 
 
@@ -864,3 +873,26 @@ def test_a_network_outage_pauses_buying_but_never_fires_the_kill_switch(tmp_path
     assert d._buys_blocked() is None
     (c,) = d.journal.closed_positions("paper")
     assert c["exit_kind"] == "stop"  # the stop fires on the first fresh price
+
+
+def test_the_shipped_experiment_skips_unclear_and_a_30_percent_hour_and_buys_the_rest(tmp_path):
+    """config/desk.yaml as shipped: only 'unclear' and a coin up more than 30% in the hour are turned away."""
+    cfg = _load_config("config/desk.yaml")
+    assert cfg.gates.max_price_change_1h_pct == 30
+    for setup in ("unclear",):
+        d, w, clock = make(tmp_path / setup, cfg=cfg, desk=FakeDesk(setup=setup, conviction=0.2))
+        only_good(w)
+        d.sweep()
+        assert d.journal.open_positions("paper") == [], setup
+    for setup in ("late_chase", "fading", "organic_trend"):
+        d, w, clock = make(tmp_path / setup, cfg=cfg, desk=FakeDesk(setup=setup, conviction=0.2))
+        only_good(w)
+        d.sweep()
+        assert len(d.journal.open_positions("paper")) == 1, setup  # bought, whatever the confidence
+    # a coin that rose 31% in the hour never reaches the desk
+    d, w, clock = make(tmp_path / "hot", cfg=cfg)
+    only_good(w)
+    real = w.tokens
+    w.tokens = lambda mints: {m: {**p, "priceChange": {**p["priceChange"], "h1": 31}} for m, p in real(mints).items()}
+    d.sweep()
+    assert d.journal.open_positions("paper") == [] and d.desk.calls == 0
