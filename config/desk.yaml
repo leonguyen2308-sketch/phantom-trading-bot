@@ -13,10 +13,10 @@ scan:
 gates:                          # G1: cheap numbers already in hand (Jupiter + DexScreener batches)
   min_age_minutes: 20           # skip the first minutes after the pool opens (insiders' and snipers' zone)
   max_age_hours: 72
-  min_liquidity_usd: 25000      # graduated tokens with a real pool only; bonding-curve coins are skipped
-  min_market_cap_usd: 150000
+  min_liquidity_usd: 12000      # graduated tokens with a real pool only; bonding-curve coins are skipped (was 25000: wider net)
+  min_market_cap_usd: 70000     # was 150000: wider net, smaller coins reach the desk (riskier: Claude still vetoes)
   max_market_cap_usd: 30000000
-  min_txns_1h: 200
+  min_txns_1h: 120              # was 200: wider net
   min_buy_sell_ratio_1h: 0.9    # buys / sells over the last hour
   max_price_change_1h_pct: 120  # don't chase a coin that already ran this much in an hour
   min_price_change_1h_pct: -25  # nor one that is dumping
