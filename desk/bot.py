@@ -47,10 +47,12 @@ RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC b
 ALERT_REPEAT_SECONDS = 300
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
 PENDING = object()  # _execute: sent, outcome unknown
-# Sources that only feed the SCANNER (finding and vetting new coins). Their failing can't hurt a coin already held, so
-# ten failures in a row pause buying and alert, and buying resumes by itself when they work again; only the sources
-# that watch positions and the wallet (prices, wallet, settle, swap, the loop itself) fire the kill switch.
-PAUSE_ONLY_SOURCES = ("scan", "jupiter", "dexscreener", "rpc", "watch")
+# Data sources: when ten calls in a row fail (about 2.5 minutes), buying pauses and an alert goes out, and buying
+# resumes by itself when they work again. The kill switch is NOT used for these. A network or API outage can't be
+# helped by selling (the sells need the same network), a stop sells on the first fresh price anyway once the
+# connection is back, and a kill at that moment would only dump every coin, winners included, at the worst time.
+# The kill switch is for things that are actually broken: repeated failing buys (wallet or keys) and the loop crashing.
+PAUSE_ONLY_SOURCES = ("scan", "jupiter", "dexscreener", "rpc", "watch", "prices", "pricing", "wallet", "settle")
 
 
 def _why(e: Exception) -> str:

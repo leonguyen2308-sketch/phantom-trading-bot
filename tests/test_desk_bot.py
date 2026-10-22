@@ -842,3 +842,25 @@ def test_a_failed_request_is_reported_with_its_http_status():
     class E(Exception):
         response = type("R", (), {"status_code": 429})()
     assert _why(E()) == "HTTP 429" and _why(ValueError()) == "ValueError"
+
+
+def test_a_network_outage_pauses_buying_but_never_fires_the_kill_switch(tmp_path):
+    d, w, clock = make(tmp_path)
+    only_good(w)
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+
+    def down(mints):
+        raise ConnectionError("ConnectError")
+    real_get = d.prices.get
+    d.prices.get = down
+    for _ in range(40):  # about 10 minutes without a price
+        tick(d, clock, 16)
+    assert not d.kill.tripped and d.errors["prices"] >= 10 and "prices" in d._buys_blocked()
+    assert d.journal.open_positions("paper")  # the coin is still held, not dumped
+    d.prices.get = real_get  # the connection is back; and the coin has crashed meanwhile
+    w.price[GOOD] = p["entry_price"] * 0.5
+    tick(d, clock, 16)
+    assert d._buys_blocked() is None
+    (c,) = d.journal.closed_positions("paper")
+    assert c["exit_kind"] == "stop"  # the stop fires on the first fresh price

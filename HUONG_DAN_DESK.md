@@ -340,8 +340,8 @@ scripts/install-desk-service.sh live
 | Lỗ 6% trong ngày | Ngừng mua đến 7 giờ sáng hôm sau, giờ Việt Nam (00:00 UTC). Vẫn quản lý coin đang giữ |
 | Thua 5 lệnh liên tiếp | Ngừng mua 12 giờ |
 | Số dư giảm 25% so với đỉnh | **Kill switch**: bán hết, dừng hẳn |
-| Mất mạng, hoặc không đọc được giá hay ví khoảng 2–3 phút | **Kill switch** |
-| Jupiter, DexScreener hoặc RPC lỗi liên tục (chỉ phần quét coin mới) | Ngừng mua và báo. Tự mua lại khi hết lỗi. Coin đang giữ vẫn được quản lý, không bán hàng loạt |
+| Mất mạng, hoặc Jupiter, DexScreener, RPC, giá, ví lỗi liên tục khoảng 2–3 phút | Ngừng mua và báo. Tự chạy lại khi hết lỗi. Coin đang giữ không bị bán hàng loạt, các lệnh cắt lỗ chạy lại ngay khi có mạng |
+| Mua lỗi liên tục 10 lần, hoặc vòng lặp của bot bị lỗi | **Kill switch** |
 | Không đọc được RugCheck hoặc danh sách ví lớn | Không mua coin đó, xem lại sau 30 phút. Không biết thì không mua |
 | Coin mất giá trên Jupiter | Lấy giá từ DexScreener, rồi từ báo giá bán. Không nguồn nào có giá trong 2 phút: coi như mất trắng, bán ngay nếu còn bán được |
 | Một coin bán mãi không được | Thử lại mỗi 10 giây, sau 5 phút thì mỗi phút. Coin dưới $5 thì bỏ (ghi lỗ). Không làm bật kill switch |
@@ -409,7 +409,7 @@ scripts/install-desk-service.sh live
 | `Desk unavailable` | Sai `ANTHROPIC_API_KEY`, hết credit, hoặc Claude đang quá tải. Không có Claude thì bot **không mua** |
 | `is not approved` | Chạy `./desk.sh approve` |
 | `NOT READY` | Đọc dòng FAIL trong `./desk.sh golive-check` |
-| Banner vàng `No new buys: jupiter keeps failing` | Jupiter trả lỗi liên tục. Thường do key Jupiter sai hoặc đã bị xoá. Kiểm tra bằng lệnh `curl` ở mục "Jupiter lỗi" bên dưới |
+| Banner `No new buys: ... keeps failing` | Mất mạng hoặc dịch vụ đó đang lỗi. Bot tự chạy lại khi hết lỗi. Nếu lỗi kéo dài mà mạng vẫn tốt, kiểm tra key (với Jupiter dùng lệnh `curl` ở mục "Jupiter lỗi" bên dưới) |
 | Dashboard ghi `no price` | Không nguồn nào báo giá coin đó. Sau 2 phút bot coi nó là mất trắng và bán nếu được |
 | Phễu chết hết ở `onchain` với lý do `RugCheck unavailable` | RugCheck đang lỗi. Bot không mua cho đến khi RugCheck chạy lại. Đó là cố ý |
 | Dashboard không mở | `launchctl list \| grep desk`; không thấy dòng nào thì chạy lại bước O hoặc W. Xem lỗi: `tail -50 logs/desk-service.err` |
