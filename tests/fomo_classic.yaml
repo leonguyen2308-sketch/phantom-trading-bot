@@ -1,0 +1,53 @@
+# The one-trader-at-a-time rule from the video, as the classic tests expect it (follow_all: false).
+# FOMO copy bot: the rule from the video, plus the limits that stop one bad memecoin from emptying the wallet.
+# The bot records this file's hash when you approve it (./fomo.sh approve) and refuses to trade live if it
+# changes afterwards. Percentages are written as numbers (50 = 50%), shares of equity as fractions (0.2 = 20%).
+
+copy:
+  copy_ratio: 0.25            # our buy = the trader's buy x 0.25 ("copy 0.25x" in the video)
+  min_trade_usd: 3            # skip a copy smaller than this
+  max_trade_usd: 20           # never more than this on one copy
+  exit_with_trader: true      # when the trader sells, sell the same share they sold ("exits when he sells")
+  fire_after_losses: 2        # "2 L in a row": fire the trader and copy the next one from the weekly top
+  lineup_size: 6              # how many of the weekly top we pick from
+  refresh_hours: 24           # reload the weekly top this often
+  fire_cooldown_days: 7       # a fired trader can't be picked again for this long
+  only_first_buy: false       # true = don't copy a trader adding more to a token they already hold
+  max_signal_age_seconds: 60  # don't copy a trade we only saw this late
+  max_chase_pct: 20           # skip if our price is this much above the price the trader paid
+  rebuy_cooldown_hours: 24    # don't buy a token again this soon after selling it
+  follow_all: false
+
+watch:
+  ws_connections: 5
+  wallets_per_connection: 100
+  max_wallet_txs_per_hour: 120
+  max_tx_reads_per_hour: 1000
+
+exits:
+  stop_loss_pct: 50           # sell everything if a position falls this much (null = off)
+  take_profit_pct: null       # sell everything at this gain (null = only when the trader sells)
+  max_hold_hours: 48          # sell if still holding after this long (null = off)
+
+safety:                       # checked before every buy; any failure skips the copy
+  min_liquidity_usd: 15000
+  min_market_cap_usd: 30000
+  max_market_cap_usd: null
+  require_mint_authority_revoked: true     # otherwise the creator can print more tokens
+  require_freeze_authority_revoked: true   # otherwise the creator can freeze your tokens (you can't sell)
+  blocked_token2022_extensions: [transferHook, permanentDelegate, nonTransferable, transferFeeConfig, defaultAccountState, pausableConfig]
+  max_price_impact_pct: 5
+  check_sell_route: true      # also quote selling it straight back: no route = honeypot, skip
+  max_round_trip_loss_pct: 15 # skip if buying and selling straight back would lose more than this
+
+limits:                       # hard limits: no rule or trader overrides these
+  max_open_positions: 5
+  max_position_pct: 0.20      # of equity in one token
+  max_exposure_pct: 0.60      # of equity in all memecoins together
+  daily_loss_limit_pct: 0.20  # no new copies until 00:00 UTC
+  max_drawdown_pct: 0.40      # from the high: kill switch, sell everything, stop
+  max_consecutive_api_errors: 10   # kill switch
+  min_sol_for_fees: 0.03      # live only: keep this much SOL for network fees and token accounts
+
+paper:
+  slippage_bps: 150           # extra cost per side versus the quote, for the seconds a live copy takes to land

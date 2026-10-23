@@ -64,7 +64,7 @@ SYLLABLES = ["MO", "OG", "PEP", "WIF", "BON", "ZO", "KAI", "NYA", "TOAD", "CHI",
 
 
 class SimWorld:
-    def __init__(self, seed: int | None = None, speed: float = 60.0, latency: float = 6.0):
+    def __init__(self, seed: int | None = None, speed: float = 60.0, latency: float = 6.0, n_traders: int = 6):
         self.rng = random.Random(seed)
         self.speed, self.latency = speed, latency
         self.real0 = time.monotonic()
@@ -73,6 +73,8 @@ class SimWorld:
         self.events: list[Swap] = []
         names = [("sim_ace", 0.55, 900), ("sim_blaze", 0.35, 700), ("sim_cobra", 0.25, 800),
                  ("sim_delta", 0.1, 600), ("sim_echo", 0.0, 1000), ("sim_fox", -0.1, 750)]
+        if n_traders != 6:  # a crowd: most are no better than chance, a few are good, a few are bad
+            names = [(f"sim_{i:03d}", self.rng.gauss(0.05, 0.25), self.rng.uniform(1500, 6000)) for i in range(1, n_traders + 1)]
         self.rng.shuffle(names)  # the leaderboard order doesn't reveal who is actually good
         self.traders: list[SimTrader] = []
         for i, (h, edge, every) in enumerate(names, 1):
@@ -139,6 +141,10 @@ class SimWatcher:
     def __init__(self, world: SimWorld):
         self.w = world
         self.wallets: set[str] = set()
+        self.priority: set[str] = set()
+
+    def status(self) -> str:
+        return f"simulated: {len(self.wallets)} wallets"
 
     def watch(self, wallets: set[str]) -> None:
         self.wallets = set(wallets)

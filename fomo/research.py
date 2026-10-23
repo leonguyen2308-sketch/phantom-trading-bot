@@ -110,7 +110,8 @@ def trader_stats(swaps: list[Swap]) -> dict:
 
 def replay(traders: list[Trader], swaps: dict[str, list[Swap]], cfg: FomoConfig, slip: float, fee: float = 0.005) -> dict:
     """The copy rule on real history. Returns the equity path, every copy and every firing."""
-    rot = Rotation(cfg.copy.fire_after_losses, cfg.copy.fire_cooldown_days * 86400)
+    rot = Rotation(cfg.copy.fire_after_losses, cfg.copy.fire_cooldown_days * 86400, follow_all=cfg.copy.follow_all)
+    listed = {t.wallet for t in traders}
     events = sorted((s for w in swaps.values() for s in w), key=lambda s: (s.t, s.slot))
     if not events:
         return {"slippage": slip, "copies": 0, "end_usd": START_USD, "pnl": 0.0, "fires": [], "unresolved": 0}
@@ -121,12 +122,17 @@ def replay(traders: list[Trader], swaps: dict[str, list[Swap]], cfg: FomoConfig,
     closed, fires = [], []
     for s in events:
         last_px[s.mint] = s.price
-        if s.side == "buy" and s.wallet == rot.s["following"]:
+        copying = (s.wallet in listed and not rot.is_fired(s.wallet, s.t)) if cfg.copy.follow_all else s.wallet == rot.s["following"]
+        if s.side == "buy" and copying:
             p = pos.get(s.mint)
             if p is None and len(pos) >= cfg.limits.max_open_positions:
                 continue
+            if p is not None and p["trader"] != s.wallet and cfg.copy.follow_all:
+                continue  # another trader already put us into this coin
             equity = cash + sum(q["tokens"] * last_px.get(m, 0) for m, q in pos.items())
-            usd = min(s.usd * cfg.copy.copy_ratio, cfg.copy.max_trade_usd, equity * cfg.limits.max_position_pct, cash)
+            invested = sum(q["tokens"] * last_px.get(m, 0) for m, q in pos.items())
+            usd = min(s.usd * cfg.copy.copy_ratio, cfg.copy.max_trade_usd, equity * cfg.limits.max_position_pct, cash,
+                      equity * cfg.limits.max_exposure_pct - invested)
             if usd < cfg.copy.min_trade_usd:
                 continue
             tokens = usd * (1 - fee) / (s.price * (1 + slip))
@@ -182,8 +188,10 @@ def run_research(traders: list[Trader], rpc: SolanaRpc, cfg: FomoConfig, *, days
         mh = f"{s['median_hold_h']:.1f}h" if s["median_hold_h"] is not None else "-"
         print(f"  @{t.handle:19} {s['swaps']:6d} {s['round_trips']:11d} {wr:>8} {s['realized_usd']:+12,.0f} {mh:>11}")
     results = [replay(traders, swaps, cfg, slip) for slip in SLIPPAGES]
-    print(f"\nCopying with the video's rule (copy {cfg.copy.copy_ratio:g}x, max ${cfg.copy.max_trade_usd:g}/copy, "
-          f"fire after {cfg.copy.fire_after_losses} L in a row), starting with ${START_USD:.0f}:")
+    rule = (f"all {len(traders)} traders at once (copy {cfg.copy.copy_ratio:g}x, max ${cfg.copy.max_trade_usd:g}/copy, fire each after "
+            f"{cfg.copy.fire_after_losses} L in a row)") if cfg.copy.follow_all else (
+            f"the video's rule (copy {cfg.copy.copy_ratio:g}x, max ${cfg.copy.max_trade_usd:g}/copy, fire after {cfg.copy.fire_after_losses} L in a row)")
+    print(f"\nCopying {rule}, starting with ${START_USD:.0f}:")
     print(f"  {'slippage/side':>13} {'copies':>6} {'win rate':>8} {'fired':>5} {'end':>10} {'P&L':>10}")
     for r in results:
         wr = f"{r['win_rate']:.0%}" if r.get("win_rate") is not None else "-"

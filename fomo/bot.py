@@ -11,7 +11,9 @@ trader on the weekly top takes over.
 from __future__ import annotations
 
 import logging
+import re
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -31,6 +33,9 @@ MARK_SECONDS = 15
 DUST_USD = 0.50
 WRITE_OFF_AFTER = 20  # failed sells in a row (about 5 minutes) before a token with no route out counts as worthless
 ALERT_REPEAT_SECONDS = 300
+CROWD_ALERTS = {"KILL", "STOP", "WARN"}  # copying hundreds of traders: Telegram only hears about what needs you
+TOKEN_VETO_SECONDS = 300  # a coin refused for what it is (authorities, pool size) is not looked up again for this long
+DEX_CACHE_SECONDS = 15  # one coin bought by several traders is read from DexScreener once
 
 
 class CopyBot:
@@ -38,7 +43,8 @@ class CopyBot:
                  lineup: Callable[[], list[Trader]], journal: Journal, kill: KillSwitch, alerts=None, clock=time.time):
         self.mode, self.cfg, self.broker, self.watcher, self.prices, self.dex = mode, cfg, broker, watcher, prices, dex
         self.mint_info, self.lineup_source, self.journal, self.kill, self.alerts, self.clock = mint_info, lineup, journal, kill, alerts, clock
-        self.rot = Rotation(cfg.copy.fire_after_losses, cfg.copy.fire_cooldown_days * 86400, journal.get(f"rotation:{mode}"))
+        self.rot = Rotation(cfg.copy.fire_after_losses, cfg.copy.fire_cooldown_days * 86400, journal.get(f"rotation:{mode}"),
+                            follow_all=cfg.copy.follow_all)
         self.errors: dict[str, int] = {"general": int(journal.get(f"api_errors:{mode}", 0))}  # failing 15-second windows in a row, per source
         self._error_window: dict[str, float] = {}
         self.equity_now = float(journal.get(f"equity:{mode}", 0.0))
@@ -50,6 +56,12 @@ class CopyBot:
         self.sol_now: float | None = None  # live: SOL for fees, read at every 15-second check
         self._lineup_retry_at = 0.0
         self._last_skip = ("", 0.0)
+        self._by_wallet: dict[str, Trader] = {}
+        self._by_wallet_src = None
+        self._signals: deque[float] = deque()  # when each followed trader's trade arrived (last hour)
+        self._copies: deque[float] = deque()  # when each copy was made (last hour)
+        self._token_veto: dict[str, tuple[float, str]] = {}
+        self._dex_cache: dict[str, tuple[float, object]] = {}
 
     # ------------------------------------------------------------ helpers
     def _save_rotation(self) -> None:
@@ -58,7 +70,7 @@ class CopyBot:
     def _feed(self, kind: str, text: str, pnl: float | None = None, alert: bool = False) -> None:
         self.journal.event(self.mode, self.clock(), kind, text, pnl)
         log.info("[%s] %s%s", kind, text, f" ({pnl:+.2f})" if pnl is not None else "")
-        if alert:
+        if alert and (not self.cfg.copy.follow_all or kind in CROWD_ALERTS):
             self._alert(f"[{kind}] {text}" + (f"  {pnl:+.2f} USD" if pnl is not None else ""))
 
     def _alert(self, text: str) -> None:
@@ -120,7 +132,7 @@ class CopyBot:
             self._alert(f"Loading the weekly top failed: {e}")
             return
         if not traders:
-            self._alert("The weekly top is empty: add traders to config/traders.yaml or set FOMOAPI_KEY.")
+            self._alert("The top list is empty: set SOLANATRACKER_API_KEY or FOMOAPI_KEY in .env, or put wallets in config/wallets.txt.")
             return
         before = self.rot.s["following"]
         for e in self.rot.set_lineup(traders[: self.cfg.copy.lineup_size], now):
@@ -128,16 +140,32 @@ class CopyBot:
         self.journal.put(f"lineup_at:{self.mode}", now)
         self._save_rotation()
 
+    def holder_wallets(self) -> set[str]:
+        """Traders whose trades we must not miss: we hold a coin they bought, and copy their exit."""
+        return {c["trader"] for c in self.journal.open_copies(self.mode)}
+
     def watched_wallets(self) -> set[str]:
-        w = {c["trader"] for c in self.journal.open_copies(self.mode)}
-        if self.rot.s["following"]:
-            w.add(self.rot.s["following"])
-        return w
+        return self.holder_wallets() | {t.wallet for t in self.rot.active(self.clock())}
+
+    def _trader(self, wallet: str) -> Trader | None:
+        lineup = self.rot.s["lineup"]
+        if lineup is not self._by_wallet_src:
+            self._by_wallet = {t["wallet"]: Trader(**t) for t in lineup}
+            self._by_wallet_src = lineup
+        return self._by_wallet.get(wallet)
+
+    def _copying(self, wallet: str) -> bool:
+        """Do we copy this wallet's buys right now?"""
+        if not self.cfg.copy.follow_all:
+            return wallet == self.rot.s["following"]
+        return self._trader(wallet) is not None and not self.rot.is_fired(wallet, self.clock())
 
     # ------------------------------------------------------------ one step
     def step(self) -> None:
         self.refresh_lineup()
         try:
+            if hasattr(self.watcher, "priority"):
+                self.watcher.priority = self.holder_wallets()
             self.watcher.watch(self.watched_wallets())
             swaps = self.watcher.poll()
             self._api_ok("watch")
@@ -156,8 +184,12 @@ class CopyBot:
         self._api_ok("general")  # the whole step ran: a streak of loop crashes is broken
 
     def on_trade(self, sw) -> None:
+        now = self.clock()
+        self._signals.append(now)
+        while self._signals and self._signals[0] < now - 3600:
+            self._signals.popleft()
         if sw.side == "buy":
-            if sw.wallet == self.rot.s["following"]:
+            if self._copying(sw.wallet):
                 self.copy_buy(sw)
             return
         if not self.cfg.copy.exit_with_trader:
@@ -170,17 +202,33 @@ class CopyBot:
 
     # ------------------------------------------------------------ buying
     def _skip(self, sw, symbol: str, why: str) -> None:
-        handle = (self.rot.following.handle if self.rot.following else sw.wallet[:6])
-        text = f"@{handle} bought ${symbol} · not copied: {why}"
-        if why == self._last_skip[0] and self.clock() - self._last_skip[1] < 600:
+        t = self._trader(sw.wallet)
+        text = f"@{t.handle if t else sw.wallet[:6]} bought ${symbol} · not copied: {why}"
+        self._tally(re.sub(r"[$\d][\d,.]*[%KMBkmbs]*", "N", why))
+        now = self.clock()
+        if self.cfg.copy.follow_all:
+            quiet = now - self._last_skip[1] < 20  # hundreds of traders: the feed shows a skip every 20 s, the tally counts them all
+        else:
+            quiet = why == self._last_skip[0] and now - self._last_skip[1] < 600
+        if quiet:
             log.info("[SKIP] %s", text)  # same reason again (daily limit, kill switch): keep the feed readable
             return
-        self._last_skip = (why, self.clock())
+        self._last_skip = (why, now)
         self._feed("SKIP", text)
+
+    def _tally(self, reason: str) -> None:
+        day = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%d")
+        rec = self.journal.get(f"skips:{self.mode}") or {}
+        if rec.get("day") != day:
+            rec = {"day": day, "n": {}}
+        rec["n"][reason] = rec["n"].get(reason, 0) + 1
+        if len(rec["n"]) > 60:  # reasons carry numbers: keep the table small
+            rec["n"] = dict(sorted(rec["n"].items(), key=lambda kv: -kv[1])[:40])
+        self.journal.put(f"skips:{self.mode}", rec)
 
     def copy_buy(self, sw) -> None:
         cfg, lim, now = self.cfg, self.cfg.limits, self.clock()
-        trader = self.rot.following
+        trader = self._trader(sw.wallet)
         symbol = sw.mint[:4]
         if self.kill.tripped:
             return self._skip(sw, symbol, "kill switch is on")
@@ -192,6 +240,8 @@ class CopyBot:
         holding = next((c for c in opens if c["mint"] == sw.mint), None)
         if holding is None and len(opens) >= lim.max_open_positions:
             return self._skip(sw, symbol, f"already {len(opens)} open copies")
+        if holding is not None and holding["trader"] != sw.wallet and cfg.copy.follow_all:
+            return self._skip(sw, symbol, "already copied another trader into it")
         if cfg.copy.only_first_buy and sw.pre_raw > 0:
             return self._skip(sw, symbol, "trader is adding to a token they already held")
         last = self.journal.last_exit(self.mode, sw.mint)
@@ -208,14 +258,37 @@ class CopyBot:
         usd = min(sw.usd * cfg.copy.copy_ratio, cfg.copy.max_trade_usd, equity * lim.max_position_pct - held_cost,
                   equity * lim.max_exposure_pct - open_cost, self.broker.usdc())
         if usd < cfg.copy.min_trade_usd:
-            return self._skip(sw, symbol, f"copy size ${max(usd, 0):.2f} under the ${cfg.copy.min_trade_usd:g} minimum")
+            room_exposure = equity * lim.max_exposure_pct - open_cost
+            room_position = equity * lim.max_position_pct - held_cost
+            if room_exposure < cfg.copy.min_trade_usd:
+                why = f"exposure limit: ${open_cost:,.0f} of ${equity * lim.max_exposure_pct:,.0f} allowed in memecoins is already in use"
+            elif room_position < cfg.copy.min_trade_usd:
+                why = f"already at the ${equity * lim.max_position_pct:,.0f} limit for one coin"
+            elif self.broker.usdc() < cfg.copy.min_trade_usd:
+                why = f"only ${self.broker.usdc():,.2f} USDC left"
+            else:
+                why = f"copy size ${max(usd, 0):.2f} under the ${cfg.copy.min_trade_usd:g} minimum"
+            return self._skip(sw, symbol, why)
         usd = round(usd, 2)
 
+        veto = self._token_veto.get(sw.mint)
+        if veto and veto[0] > now:
+            return self._skip(sw, symbol, veto[1])
         info = self._mint(sw.mint)
-        stats = self.dex.get(sw.mint)
+        cached = self._dex_cache.get(sw.mint)
+        if cached and now - cached[0] < DEX_CACHE_SECONDS:
+            stats = cached[1]
+        else:
+            stats = self.dex.get(sw.mint)
+            self._dex_cache[sw.mint] = (now, stats)
+            if len(self._dex_cache) > 500:
+                self._dex_cache = {m: v for m, v in self._dex_cache.items() if now - v[0] < DEX_CACHE_SECONDS}
         symbol = stats.symbol if stats else symbol
         bad = token_vetoes(info, stats, cfg.safety)
         if bad:
+            self._token_veto[sw.mint] = (now + TOKEN_VETO_SECONDS, "; ".join(bad))
+            if len(self._token_veto) > 2000:
+                self._token_veto = {m: v for m, v in self._token_veto.items() if v[0] > now}
             return self._skip(sw, symbol, "; ".join(bad))
         try:
             q = self.broker.quote_buy(sw.mint, usd)
@@ -241,6 +314,9 @@ class CopyBot:
                                    handle=trader.handle if trader else sw.wallet[:6], opened_t=int(now), cost_usd=fill.usd,
                                    raw=fill.raw, trader_price=sw.price, trader_sig=sw.sig, buy_ref=fill.ref)
         self.marks[sw.mint] = fill.usd / (fill.raw / 10 ** info.decimals)
+        self._copies.append(now)
+        while self._copies and self._copies[0] < now - 3600:
+            self._copies.popleft()
         self._feed("COPY", f"@{trader.handle if trader else '?'} bought ${symbol} · copy {cfg.copy.copy_ratio:g}x · ${fill.usd:,.2f}", alert=True)
 
     def _execute(self, q: Quote) -> Fill | None:
@@ -331,7 +407,7 @@ class CopyBot:
         for e in events:
             self._feed("FIRE" if "fired" in e else "PICK", e, alert=True)
         self._save_rotation()
-        if fired and not self.rot.s["following"]:
+        if fired and not self.rot.active(now):
             self._alert("Every trader on the weekly top is fired. Copying stops until the list refreshes.")
         return True
 
@@ -436,12 +512,27 @@ class CopyBot:
         if len(curve) > 600:
             step = len(curve) / 600
             curve = [curve[int(i * step)] for i in range(600)] + [curve[-1]]
+        crowd = self.cfg.copy.follow_all
         lineup = []
         for t in self.rot.lineup:
             s = self.rot.stats(t.wallet)
-            status = "following" if cur and t.wallet == cur.wallet else "fired" if self.rot.is_fired(t.wallet, now) else "bench"
+            fired = self.rot.is_fired(t.wallet, now)
+            status = "fired" if fired else "following" if (crowd or (cur and t.wallet == cur.wallet)) else "bench"
             lineup.append({"rank": t.rank, "handle": t.handle, "wallet": t.wallet, "pnl7d": t.pnl_7d, "winRate": t.win_rate,
                            "status": status, "us": round(s["pnl"], 2), "trades": s["trades"]})
+        n_listed, n_fired = len(lineup), sum(1 for r in lineup if r["status"] == "fired")
+        if crowd:  # 500 rows don't fit a page: the ones we have traded with, then the best ranked
+            lineup = sorted(lineup, key=lambda r: (-r["trades"], r["rank"]))[:40]
+        scored = sorted((r for r in lineup if r["trades"]), key=lambda r: r["us"])
+        day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+        skips = self.journal.get(f"skips:{self.mode}") or {}
+        crowd_state = {
+            "on": crowd, "listed": n_listed, "fired": n_fired, "followed": n_listed - n_fired,
+            "signals1h": len(self._signals), "copies1h": len(self._copies),
+            "worst": scored[:5], "best": scored[::-1][:5],
+            "skips": sorted(({"reason": k, "n": v} for k, v in (skips.get("n") or {}).items()), key=lambda r: -r["n"])[:8] if skips.get("day") == day else [],
+            "watch": getattr(self.watcher, "status", lambda: "")(),
+        }
         positions = []
         for c in self.journal.open_copies(self.mode):
             cost_px = c["cost_usd"] / (c["raw"] / 10 ** c["decimals"])
@@ -450,8 +541,10 @@ class CopyBot:
             positions.append({"symbol": c["symbol"], "mint": c["mint"], "handle": c["handle"], "cost": round(c["cost_usd"] * left, 2),
                               "value": round(self.remaining(c) / 10 ** c["decimals"] * p, 2), "pnlPct": round((p / cost_px - 1) * 100, 1),
                               "ageMin": int((now - c["opened_t"]) / 60)})
+        closed = self.journal.closed_copies(self.mode)
+        results = {"n": len(closed), "wins": sum(1 for c in closed if (c["pnl"] or 0) > 0), "pnl": round(sum(c["pnl"] or 0 for c in closed), 2)}
         return {
-            "mode": self.mode, "now": now, "killed": self.kill.tripped, "killReason": self.kill.reason,
+            "mode": self.mode, "now": now, "killed": self.kill.tripped, "killReason": self.kill.reason, "results": results,
             "wsConnected": bool(getattr(self.watcher, "ws_connected", False)),
             "balance": round(eq, 2), "start": round(start, 2), "pnl": round(eq - start, 2),
             "pnlPct": round((eq / start - 1) * 100, 1) if start else 0.0, "multiple": round(eq / start, 2) if start else 1.0,
@@ -459,9 +552,9 @@ class CopyBot:
             "following": ({"handle": cur.handle, "wallet": cur.wallet, "rank": cur.rank, "pnl7d": cur.pnl_7d, "winRate": cur.win_rate,
                            "copyRatio": self.cfg.copy.copy_ratio, "last6": st["last"], "withHim": round(st["pnl"], 2)} if cur else None),
             "fireRule": {"after": self.cfg.copy.fire_after_losses, "streak": st["streak"] if st else 0, "firedSoFar": self.rot.s["fires"]},
-            "equity": curve, "stints": self.rot.s["stints"], "lineup": lineup, "positions": positions,
+            "equity": curve, "stints": self.rot.s["stints"], "lineup": lineup, "positions": positions, "crowd": crowd_state,
             "feed": [{"t": r["t"], "kind": r["kind"], "text": r["text"], "pnl": r["pnl"]} for r in self.journal.events(self.mode, 80)],
             "dailyStop": self.journal.get(f"daily_stop:{self.mode}") == datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d"),
-            "limits": {"maxTrade": self.cfg.copy.max_trade_usd, "maxOpen": self.cfg.limits.max_open_positions,
+            "limits": {"maxTrade": self.cfg.copy.max_trade_usd, "maxOpen": self.cfg.limits.max_open_positions, "copyRatio": self.cfg.copy.copy_ratio,
                        "stopLoss": self.cfg.exits.stop_loss_pct, "maxDrawdown": self.cfg.limits.max_drawdown_pct},
         }

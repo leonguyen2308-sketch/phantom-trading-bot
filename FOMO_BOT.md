@@ -167,17 +167,19 @@ Bạn tự bật được bằng nút **KILL SWITCH** trên dashboard, lệnh `/
 
 | Mục | Mặc định | Ý nghĩa |
 |---|---|---|
+| `follow_all` | true | Copy **cả danh sách cùng lúc** (top 1 tới 500). `false` = cách cũ trong video: chỉ 1 ví, đuổi rồi sang ví kế tiếp. Xem [`HUONG_DAN_COPY500.md`](HUONG_DAN_COPY500.md) |
+| `lineup_size` | 500 | Copy top bao nhiêu ví (1 tới 500; cách cũ dùng 6) |
 | `copy_ratio` | 0.25 | Size = lệnh của trader × 0.25 (giống video) |
-| `max_trade_usd` | 20 | Mỗi lệnh copy tối đa $20 |
-| `min_trade_usd` | 3 | Lệnh nhỏ hơn $3 thì bỏ qua |
-| `fire_after_losses` | 2 | Thua 2 lệnh liền thì đuổi trader |
-| `lineup_size` | 6 | Chọn từ top 6 tuần |
+| `max_trade_usd` | 5 | Mỗi lệnh copy tối đa $5 (cách cũ: $20) |
+| `min_trade_usd` | 2 | Lệnh nhỏ hơn $2 thì bỏ qua |
+| `fire_after_losses` | 3 | Thua 3 lệnh liền thì đuổi trader (7 ngày); cách cũ: 2 |
+| `watch.*` | 5 x 100 | Giới hạn gói miễn phí khi đọc 500 ví: 5 kết nối WebSocket x 100 ví, 120 lệnh/giờ/ví tối đa, 1.000 lần đọc giao dịch/giờ |
 | `max_chase_pct` | 20 | Giá đã cao hơn giá trader mua 20% thì bỏ qua |
 | `stop_loss_pct` | 50 | Coin giảm 50% thì bán (video không có, nhưng nên có) |
-| `max_hold_hours` | 48 | Giữ quá 48 giờ thì bán |
+| `max_hold_hours` | 24 | Giữ quá 24 giờ thì bán (cách cũ: 48) |
 | `min_liquidity_usd` | 15000 | Pool dưới $15k thanh khoản thì bỏ qua |
 | `check_sell_route` | true | Thử báo giá bán ngược lại ngay: không bán được = honeypot, bỏ qua |
-| `max_open_positions` | 5 | Tối đa 5 coin cùng lúc |
+| `max_open_positions` | 15 | Tối đa 15 coin cùng lúc (cách cũ: 5) |
 | `max_drawdown_pct` | 0.40 | Giảm 40% từ đỉnh thì kill switch |
 | `daily_loss_limit_pct` | 0.20 | Lỗ 20% trong ngày thì ngừng mua tới 00:00 UTC (7 giờ sáng giờ Việt Nam) |
 
@@ -219,8 +221,9 @@ Nguồn:
 | Lệnh | Làm gì |
 |---|---|
 | `./fomo.sh demo` | mô phỏng + dashboard, không cần key |
-| `./fomo.sh traders` | xem top tuần, kiểm tra bot có thấy lệnh của từng trader không |
-| `./fomo.sh research` | chạy lại luật copy trên giao dịch thật 7 ngày qua |
+| `./fomo.sh demo --traders 200` | mô phỏng với 200 ví giả (mặc định 40) |
+| `./fomo.sh traders` | xem top ví (lưu đủ danh sách vào `reports/fomo_top.txt`), kiểm tra 8 ví đầu (`--check N` để đổi số) |
+| `./fomo.sh research --top 10` | chạy lại luật copy trên giao dịch thật 7 ngày qua của N ví đầu (mỗi ví tốn hàng trăm lần gọi RPC) |
 | `./fomo.sh paper` | copy thật, tiền giả |
 | `./fomo.sh wallet-check` | kiểm tra ví bot (không gửi gì) |
 | `./fomo.sh approve` | khoá `config/fomo.yaml` |

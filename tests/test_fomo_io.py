@@ -101,7 +101,7 @@ def sw(i, wallet, side, price, t, pre=0, usd=400.0):
 
 
 def test_replay_applies_the_fire_rule_on_history():
-    cfg = load_config("config/fomo.yaml")
+    cfg = load_config("tests/fomo_classic.yaml")
     a, b = "A" * 44, "B" * 44
     h = {a: [], b: []}
     t = 1000
@@ -117,6 +117,28 @@ def test_replay_applies_the_fire_rule_on_history():
     assert r["pnl"] == pytest.approx(-10 - 9 + 32.4)
     worse = replay([Trader("ace", a, 1), Trader("bee", b, 2)], h, cfg, slip=0.08)
     assert worse["pnl"] < r["pnl"]
+
+
+def test_replay_in_crowd_mode_copies_everyone_and_fires_each_trader_on_their_own():
+    cfg = load_config("config/fomo.yaml")  # follow_all, 3 losses to fire, $5 a copy
+    a, b, c = "A" * 44, "B" * 44, "C" * 44
+    h = {a: [], b: [], c: []}
+    t = 1000
+    for k in range(3):  # ace loses three times, and is fired after the third
+        buy = sw(4 * k, a, "buy", 1.0, t)
+        h[a] += [buy, sw(4 * k + 1, a, "sell", 0.5, t + 10, pre=buy.raw)]
+        t += 100
+    buy = sw(30, b, "buy", 1.0, t)
+    h[b] += [buy, sw(31, b, "sell", 3.0, t + 10, pre=buy.raw)]  # bee wins
+    t += 100
+    buy = sw(40, c, "buy", 1.0, t)  # cat buys the coin that is still open from nobody else: a separate copy
+    h[c] += [buy, sw(41, c, "sell", 2.0, t + 10, pre=buy.raw)]
+    t += 100
+    buy = sw(50, a, "buy", 1.0, t)  # ace is fired now: this buy is not copied
+    h[a] += [buy, sw(51, a, "sell", 0.5, t + 10, pre=buy.raw)]
+    r = replay([Trader("ace", a, 1), Trader("bee", b, 2), Trader("cat", c, 3)], h, cfg, slip=0.0, fee=0.0)
+    assert len(r["fires"]) == 1 and r["closed"] == 5 and r["wins"] == 2  # 3 ace losses + bee + cat; ace's fourth buy was not taken
+    assert r["pnl"] == pytest.approx(-2.5 * 3 + 10 + 5)  # $5 copies: -50% x3, +200%, +100%
 
 
 def test_trader_stats_round_trips():
@@ -208,3 +230,26 @@ def test_demo_world_runs_hours_without_errors(tmp_path):
     assert bot.journal.count_copies("demo") > 0
     s = bot.dashboard_state()
     assert s["balance"] > 0 and len(s["equity"]) > 10
+
+
+def test_crowd_demo_follows_forty_made_up_traders_for_hours_without_errors(tmp_path):
+    from fomo.bot import CopyBot
+    from fomo.journal import Journal
+    from fomo.sim import SimBroker, SimDex, SimPrices, SimWatcher, SimWorld
+    from phantom.risk import KillSwitch
+    world = SimWorld(seed=3, speed=1, n_traders=40)
+    now = [world.t0]
+    world.clock = lambda: now[0]
+    dex = SimDex(world)
+    bot = CopyBot(mode="demo", cfg=load_config("config/fomo.yaml"), broker=SimBroker(world), watcher=SimWatcher(world),
+                  prices=SimPrices(world), dex=dex, mint_info=dex.mint_info, lineup=world.lineup,
+                  journal=Journal(tmp_path / "d.sqlite"), kill=KillSwitch(tmp_path / "k.json"), clock=world.clock)
+    errors = []
+    bot._api_error = errors.append
+    for _ in range(6 * 3600 // 10):
+        now[0] += 10
+        bot.step()
+    s = bot.dashboard_state()
+    assert errors == [] and s["crowd"]["followed"] + s["crowd"]["fired"] == 40
+    assert bot.journal.count_copies("demo") > 10 and len({c["trader"] for c in bot.journal.closed_copies("demo")}) > 3
+    assert s["balance"] > 0 and len(s["positions"]) <= bot.cfg.limits.max_open_positions

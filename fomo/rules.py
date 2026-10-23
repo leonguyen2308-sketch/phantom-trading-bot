@@ -10,8 +10,8 @@ from fomo.leaderboard import Trader
 
 
 class Rotation:
-    def __init__(self, fire_after: int, cooldown_seconds: float, state: dict | None = None):
-        self.fire_after, self.cooldown = fire_after, cooldown_seconds
+    def __init__(self, fire_after: int, cooldown_seconds: float, state: dict | None = None, follow_all: bool = False):
+        self.fire_after, self.cooldown, self.follow_all = fire_after, cooldown_seconds, follow_all
         self.s = state or {"lineup": [], "following": None, "fired": {}, "stats": {}, "stints": [], "fires": 0}
 
     # ---- reads ----
@@ -27,6 +27,13 @@ class Rotation:
     def is_fired(self, wallet: str, now: float) -> bool:
         return self.s["fired"].get(wallet, 0) > now
 
+    def active(self, now: float) -> list[Trader]:
+        """Who is copied right now. Crowd mode: everyone on the list who isn't fired. Otherwise just the one we follow."""
+        if not self.follow_all:
+            cur = self.following
+            return [cur] if cur else []
+        return [t for t in self.lineup if not self.is_fired(t.wallet, now)]
+
     def stats(self, wallet: str) -> dict:
         return self.s["stats"].get(wallet) or {"trades": 0, "wins": 0, "pnl": 0.0, "streak": 0, "last": []}
 
@@ -35,6 +42,9 @@ class Rotation:
         """Load a fresh weekly top. Keep copying the current trader if they are still on it."""
         self.s["lineup"] = [t.to_dict() for t in traders]
         events = [f"weekly top loaded · {len(traders)} traders"]
+        if self.follow_all:
+            self.s["following"] = None  # nobody is "the one": everyone not fired is copied
+            return events
         cur = self.s["following"]
         if not cur or cur not in {t.wallet for t in traders} or self.is_fired(cur, now):
             events += self._advance(now, why="")

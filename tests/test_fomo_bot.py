@@ -97,7 +97,7 @@ class Broker:
 @pytest.fixture
 def world(tmp_path):
     clock, m, w = Clock(), Market(), FakeWatcher()
-    cfg = load_config("config/fomo.yaml")
+    cfg = load_config("tests/fomo_classic.yaml")
     bot = CopyBot(mode="paper", cfg=cfg, broker=Broker(m), watcher=w, prices=m, dex=Dex(m),
                   mint_info=lambda mint: MintInfo(mint, 6, None, "F" * 44 if mint in m.freeze else None, "spl-token"),
                   lineup=lambda: [Trader("ace", A, 1), Trader("bee", B, 2), Trader("cat", C, 3)],

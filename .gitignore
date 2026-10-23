@@ -14,3 +14,6 @@ __pycache__/
 *.py[cod]
 .venv/
 .pytest_cache/
+
+# your own list of wallets to copy (FOMO crowd mode)
+config/wallets.txt

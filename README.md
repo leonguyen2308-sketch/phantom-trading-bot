@@ -9,6 +9,8 @@
 > fires them after 2 losses in a row, like the copyfomo video. Guides in Vietnamese: [`HUONG_DAN.md`](HUONG_DAN.md)
 > (step by step, A to Z) and [`FOMO_BOT.md`](FOMO_BOT.md).
 > Try it with no keys: `./fomo.sh demo`, then open http://localhost:8001.
+> **Crowd mode** (the shipped config): copies the top 1..500 wallets at once, small tickets, each trader fired
+> on its own after 3 losses. Guide in Vietnamese: [`HUONG_DAN_COPY500.md`](HUONG_DAN_COPY500.md).
 
 
 Trades BTC automatically from a dedicated Phantom (Solana) wallet. **It starts in paper mode and

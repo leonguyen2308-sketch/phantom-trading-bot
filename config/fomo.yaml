@@ -1,25 +1,33 @@
-# FOMO copy bot: the rule from the video, plus the limits that stop one bad memecoin from emptying the wallet.
+# FOMO copy bot: copies the top 1..500 wallets at once (crowd mode), with the limits that stop one bad memecoin
+# from emptying the wallet. Set follow_all: false for the old one-trader-at-a-time rule from the video.
 # The bot records this file's hash when you approve it (./fomo.sh approve) and refuses to trade live if it
 # changes afterwards. Percentages are written as numbers (50 = 50%), shares of equity as fractions (0.2 = 20%).
 
 copy:
+  follow_all: true            # true = every trader on the list at once; false = one at a time, the next when one is fired
+  lineup_size: 500            # how many of the top list: 1..500 (the websockets below cap it)
   copy_ratio: 0.25            # our buy = the trader's buy x 0.25 ("copy 0.25x" in the video)
-  min_trade_usd: 3            # skip a copy smaller than this
-  max_trade_usd: 20           # never more than this on one copy
+  min_trade_usd: 2            # skip a copy smaller than this
+  max_trade_usd: 5            # never more than this on one copy (small tickets: many traders buy at once)
   exit_with_trader: true      # when the trader sells, sell the same share they sold ("exits when he sells")
-  fire_after_losses: 2        # "2 L in a row": fire the trader and copy the next one from the weekly top
-  lineup_size: 6              # how many of the weekly top we pick from
-  refresh_hours: 24           # reload the weekly top this often
-  fire_cooldown_days: 7       # a fired trader can't be picked again for this long
+  fire_after_losses: 3        # "L in a row": stop copying that trader (the rest keep going)
+  refresh_hours: 24           # reload the top list this often
+  fire_cooldown_days: 7       # a fired trader can't be copied again for this long
   only_first_buy: false       # true = don't copy a trader adding more to a token they already hold
   max_signal_age_seconds: 60  # don't copy a trade we only saw this late
   max_chase_pct: 20           # skip if our price is this much above the price the trader paid
   rebuy_cooldown_hours: 24    # don't buy a token again this soon after selling it
 
+watch:                        # reading 500 wallets live (every number here is a free-plan limit, not a strategy choice)
+  ws_connections: 5           # Helius free plan: 5 websocket connections
+  wallets_per_connection: 100 # 5 x 100 = 500 wallets
+  max_wallet_txs_per_hour: 120   # a wallet busier than this is a bot, or too fast to copy: ignored for 6 hours
+  max_tx_reads_per_hour: 1000    # 1000/h is about 720k RPC credits a month: inside the free 1M. Trades of coins we hold are read first
+
 exits:
   stop_loss_pct: 50           # sell everything if a position falls this much (null = off)
   take_profit_pct: null       # sell everything at this gain (null = only when the trader sells)
-  max_hold_hours: 48          # sell if still holding after this long (null = off)
+  max_hold_hours: 24          # sell if still holding after this long (null = off)
 
 safety:                       # checked before every buy; any failure skips the copy
   min_liquidity_usd: 15000
@@ -33,8 +41,8 @@ safety:                       # checked before every buy; any failure skips the 
   max_round_trip_loss_pct: 15 # skip if buying and selling straight back would lose more than this
 
 limits:                       # hard limits: no rule or trader overrides these
-  max_open_positions: 5
-  max_position_pct: 0.20      # of equity in one token
+  max_open_positions: 15
+  max_position_pct: 0.06      # of equity in one token
   max_exposure_pct: 0.60      # of equity in all memecoins together
   daily_loss_limit_pct: 0.20  # no new copies until 00:00 UTC
   max_drawdown_pct: 0.40      # from the high: kill switch, sell everything, stop

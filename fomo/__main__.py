@@ -16,7 +16,8 @@ from phantom.config import file_sha256, install_redaction, load_env
 STATE = Path("state")
 CONFIG = Path("config/fomo.yaml")
 TRADERS = Path("config/traders.yaml")
-PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "fomo.html"
+WALLETS = Path("config/wallets.txt")
+DASHBOARD = Path(__file__).resolve().parent.parent / "dashboard"
 log = logging.getLogger("fomo")
 
 
@@ -48,12 +49,13 @@ def load_bot_keypair():
 
 def lineup_fn(cfg):
     from fomo.leaderboard import load_lineup
-    return lambda: load_lineup(cfg.copy.lineup_size, os.environ.get("FOMOAPI_KEY", ""), TRADERS)
+    return lambda: load_lineup(cfg.copy.lineup_size, os.environ.get("FOMOAPI_KEY", ""), TRADERS,
+                               tracker_key=os.environ.get("SOLANATRACKER_API_KEY", ""), wallets_path=WALLETS)
 
 
 # ---------------------------------------------------------------- run
 
-def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None) -> None:
+def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None, traders: int | None = None) -> None:
     from fomo.bot import CopyBot
     from fomo.config import load_config
     from fomo.journal import Journal
@@ -68,7 +70,7 @@ def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None) 
         from fomo.sim import SimBroker, SimDex, SimPrices, SimWatcher, SimWorld
         for f in (STATE / "fomo_demo.sqlite", STATE / "fomo_demo_kill.json"):
             f.unlink(missing_ok=True)  # every demo starts fresh
-        world = SimWorld(seed=seed, speed=speed)
+        world = SimWorld(seed=seed, speed=speed, n_traders=traders or (40 if cfg.copy.follow_all else 6))
         dex = SimDex(world)
         journal, kill = Journal(STATE / "fomo_demo.sqlite"), KillSwitch(STATE / "fomo_demo_kill.json")
         bot = CopyBot(mode="demo", cfg=cfg, broker=SimBroker(world, 100.0, cfg.paper.slippage_bps), watcher=SimWatcher(world),
@@ -103,8 +105,13 @@ def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None) 
         else:
             start = float(os.environ.get("FOMO_PAPER_START_USD", "100"))
             broker = PaperBroker(STATE / "fomo_paper.json", os.environ["JUPITER_API_KEY"], start, cfg.paper.slippage_bps)
+        crowd = cfg.copy.follow_all
         watcher = LeaderWatcher(rpc, prices.sol_usd, os.environ.get("SOLANA_WS_URL") or ws_url(os.environ["SOLANA_RPC_URL"]),
-                                max_age_seconds=max(cfg.copy.max_signal_age_seconds * 2, 120))
+                                max_age_seconds=max(cfg.copy.max_signal_age_seconds * 2, 120),
+                                ws_connections=cfg.watch.ws_connections if crowd else 1,
+                                wallets_per_connection=cfg.watch.wallets_per_connection if crowd else 10 ** 9,
+                                usdc_accounts=not crowd, max_wallet_txs_per_hour=cfg.watch.max_wallet_txs_per_hour if crowd else 0,
+                                max_reads_per_hour=cfg.watch.max_tx_reads_per_hour if crowd else 0, max_reads_per_poll=6 if crowd else 0)
         bot = CopyBot(mode=mode, cfg=cfg, broker=broker, watcher=watcher, prices=prices, dex=DexStats(), mint_info=rpc.mint_info,
                       lineup=lineup_fn(cfg), journal=journal, kill=kill)
 
@@ -120,14 +127,16 @@ def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None) 
             if not bot.kill.tripped:
                 bot.trip(reason)
 
-    serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r), lock, page=PAGE), port)
+    page = DASHBOARD / ("crowd.html" if cfg.copy.follow_all else "fomo.html")
+    serve_in_background(make_app(bot.dashboard_state, lambda r: bot.trip(r), lock, page=page), port)
     log.info("Dashboard: http://localhost:%d", port)
     if alerts:
         def status() -> str:
             with lock:
                 s = bot.dashboard_state()
-            f = s["following"]
-            return (f"{mode.upper()} | balance ${s['balance']:,.2f} ({s['pnl']:+,.2f}) | copying {('@' + f['handle']) if f else 'nobody'} | "
+            f, c = s["following"], s["crowd"]
+            who = f"{c['followed']} traders" if c["on"] else ('@' + f['handle']) if f else 'nobody'
+            return (f"{mode.upper()} | balance ${s['balance']:,.2f} ({s['pnl']:+,.2f}) | copying {who} | "
                     f"{len(s['positions'])} open | kill switch {'ON: ' + s['killReason'] if s['killed'] else 'armed'}")
         alerts.listen({"/status": status, "/kill": lambda: (trip("Telegram /kill"), "Kill switch fired. Selling everything; copying stopped.")[1]})
         bot._alert(f"FOMO copy bot started in {mode.upper()} mode. Send /status or /kill.")
@@ -154,17 +163,22 @@ def cmd_run(mode: str, port: int, speed: float = 60.0, seed: int | None = None) 
 
 # ---------------------------------------------------------------- checks and tools
 
-def cmd_traders() -> None:
+def cmd_traders(check: int = 8) -> None:
     from datetime import datetime, timezone
 
     from fomo.config import load_config
     cfg = load_config(CONFIG)
     traders = lineup_fn(cfg)()
     if not traders:
-        sys.exit("No traders. Add them to config/traders.yaml (see FOMO_BOT.md, step 3) or set FOMOAPI_KEY.")
-    print(f"Weekly top ({traders[0].source}):")
-    for t in traders:
+        sys.exit("No traders. Set SOLANATRACKER_API_KEY or FOMOAPI_KEY in .env, or put wallets in config/wallets.txt (see FOMO_BOT.md, step 3).")
+    print(f"Top {len(traders)} traders ({traders[0].source}); the bot copies {'all of them at once' if cfg.copy.follow_all else 'one at a time'}:")
+    for t in traders[:15]:
         print(f"  #{t.rank} @{t.handle:18} {t.wallet}" + (f"  7d {t.pnl_7d:+,.0f}" if t.pnl_7d is not None else ""))
+    if len(traders) > 15:
+        Path("reports").mkdir(exist_ok=True)
+        Path("reports/fomo_top.txt").write_text("\n".join(f"{t.rank}\t{t.handle}\t{t.wallet}" for t in traders) + "\n")
+        print(f"  ... and {len(traders) - 15} more (all of them in reports/fomo_top.txt)")
+    traders = traders[:check]
     if not os.environ.get("SOLANA_RPC_URL"):
         print("\nSet SOLANA_RPC_URL in .env to also check that the bot can see each trader's trades.")
         return
@@ -178,7 +192,8 @@ def cmd_traders() -> None:
             sol = Prices(os.environ["JUPITER_API_KEY"]).sol_usd()
         except Exception:
             pass
-    print("\nCan the bot see their trades? (reads their last 30 transactions)")
+    print(f"\nCan the bot see their trades? (reads the last 30 transactions of the first {len(traders)}; "
+          "a check of all of them would use thousands of RPC credits)")
     cache = SwapCache(STATE / "fomo_tx_cache.sqlite")
     for t in traders:
         try:
@@ -262,16 +277,16 @@ def cmd_kill(reset: bool) -> None:
     print("Kill switch reset. Restart the bot (or it picks this up within 15 seconds).")
 
 
-def cmd_research(days: float, max_tx: int) -> None:
+def cmd_research(days: float, max_tx: int, top: int = 10) -> None:
     need("SOLANA_RPC_URL", "JUPITER_API_KEY")
     from fomo.chain import SolanaRpc
     from fomo.config import load_config
     from fomo.market import Prices
     from fomo.research import run_research
     cfg = load_config(CONFIG)
-    traders = lineup_fn(cfg)()
+    traders = lineup_fn(cfg)()[:top]
     if not traders:
-        sys.exit("No traders. Add them to config/traders.yaml or set FOMOAPI_KEY.")
+        sys.exit("No traders. Set SOLANATRACKER_API_KEY or FOMOAPI_KEY in .env, or put wallets in config/wallets.txt.")
     sol = Prices(os.environ["JUPITER_API_KEY"]).sol_usd()
     run_research(traders, SolanaRpc(os.environ["SOLANA_RPC_URL"]), cfg, days=days, sol_usd=sol, max_tx=max_tx,
                  cache=STATE / "fomo_tx_cache.sqlite", out=Path("reports"))
@@ -284,6 +299,7 @@ def main() -> None:
     d = sub.add_parser("demo", help="simulation: made-up traders and coins, fake money, no keys needed")
     d.add_argument("--speed", type=float, default=60.0, help="simulated seconds per real second (default 60)")
     d.add_argument("--seed", type=int, default=None)
+    d.add_argument("--traders", type=int, default=None, help="how many made-up traders to follow (default 40, or 6 for the one-at-a-time rule)")
     d.add_argument("--port", type=int, default=8001)
     for m in ("paper", "live"):
         sp = sub.add_parser(m, help=f"copy the weekly top for {'fake' if m == 'paper' else 'REAL'} money")
@@ -291,7 +307,9 @@ def main() -> None:
     r = sub.add_parser("research", help="replay the copy rule on the traders' real trades from the last days")
     r.add_argument("--days", type=float, default=7.0)
     r.add_argument("--max-tx", type=int, default=600, help="most transactions to read per trader")
-    sub.add_parser("traders", help="show the weekly top and check each wallet on-chain")
+    r.add_argument("--top", type=int, default=10, help="research only the first N traders of the list (each one costs hundreds of RPC calls)")
+    tr = sub.add_parser("traders", help="show the top list and check the first wallets on-chain")
+    tr.add_argument("--check", type=int, default=8, help="how many of the first wallets to check on-chain (default 8)")
     sub.add_parser("wallet-check", help="check the bot wallet and a Jupiter quote (sends nothing)")
     sub.add_parser("approve", help="review and lock config/fomo.yaml")
     sub.add_parser("ack-risks", help="read and accept what could blow up the account")
@@ -301,13 +319,13 @@ def main() -> None:
     a = ap.parse_args()
     setup_logging()
     if a.cmd == "demo":
-        cmd_run("demo", a.port, a.speed, a.seed)
+        cmd_run("demo", a.port, a.speed, a.seed, a.traders)
     elif a.cmd in ("paper", "live"):
         cmd_run(a.cmd, a.port)
     elif a.cmd == "research":
-        cmd_research(a.days, a.max_tx)
+        cmd_research(a.days, a.max_tx, a.top)
     elif a.cmd == "traders":
-        cmd_traders()
+        cmd_traders(a.check)
     elif a.cmd == "wallet-check":
         cmd_wallet_check()
     elif a.cmd == "approve":
