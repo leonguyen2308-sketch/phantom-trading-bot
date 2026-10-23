@@ -402,3 +402,18 @@ def test_gecko_pools_reads_the_json_api_shape_and_skips_what_it_cannot_read():
     assert seen == ["/api/v2/networks/solana/trending_pools"]
     assert out == [{"mint": good1, "pool": "P1", "rank": 1}, {"mint": good2, "pool": "P5", "rank": 2}]
     assert GeckoTerminal(client(lambda r: httpx.Response(200, json={}))).pools("new_pools") == []
+
+
+def test_g1_hot_and_attention_signals():
+    hot = CFG.hot
+    base = {"mcap_usd": 30_000, "liquidity_usd": 8_000, "age_min": 60, "buys_1h": 40, "sells_1h": 30, "trending_rank_gecko": 5}
+    assert funnel.g1_hot(base, "pumpswap", hot) == []
+    assert funnel.g1_hot({**base, "mcap_usd": 19_999}, "pumpswap", hot) and funnel.g1_hot({**base, "mcap_usd": 50_001}, "pumpswap", hot)
+    assert funnel.g1_hot({**base, "mcap_usd": None}, "pumpswap", hot)
+    assert funnel.g1_hot(base, "pumpfun", hot) == []  # a bonding-curve coin is fine here
+    text = " | ".join(funnel.g1_hot({"mcap_usd": 30_000, "liquidity_usd": 100, "age_min": 1, "buys_1h": 3, "sells_1h": 0}, "pumpswap", hot))
+    for word in ("liquidity", "min old", "trades in the last hour", "no sells", "nobody is looking"):
+        assert word in text
+    assert funnel.attention_signals({"trending_rank_jupiter": 51}, hot) == []  # far down Jupiter's list: no
+    sig = funnel.attention_signals({"trending_rank_gecko": 2, "trending_rank_jupiter": 7, "new_listing": 1, "boosted": 1, "vol_to_mcap_1h": 2.5}, hot)
+    assert len(sig) == 5

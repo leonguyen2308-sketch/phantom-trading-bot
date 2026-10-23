@@ -6,12 +6,12 @@ scan:
   organic_every: 5              # also pull Jupiter's top-organic list every N sweeps
   dexscreener_every: 2          # and DexScreener's new profiles/boosts every N sweeps
   max_universe: 600             # cap on tokens looked at per sweep
-  deep_checks_per_sweep: 6      # tokens per sweep that get on-chain holder checks (RPC credits); the most active and most watched go first
+  deep_checks_per_sweep: 10     # tokens per sweep that get on-chain checks (RPC credits); the most active and most watched go first
   recheck_killed_minutes: 360   # a token killed on facts (authority, holders, rug) is not re-checked for this long
   recheck_passed_minutes: 10    # a finalist the desk looked at is not re-sent to the desk for this long (was 30)
   extra_jupiter_lists: [toptrending/1h, toptraded/1h, toporganicscore/5m]   # more ways to find coins people are trading
-  extra_lists_every: 3          # pull those every 3rd sweep (Jupiter's free key is about 1 request a second)
-  gecko_discovery_every: 4      # GeckoTerminal's Solana trending and newest pools every 4th sweep; 0 = off
+  extra_lists_every: 2          # pull those every 2nd sweep (Jupiter's free key is about 1 request a second)
+  gecko_discovery_every: 2      # GeckoTerminal's Solana trending and newest pools every 2nd sweep (about a minute); 0 = off
 
 gates:                          # G1: cheap numbers already in hand (Jupiter + DexScreener batches)
   min_age_minutes: 20           # skip the first minutes after the pool opens (insiders' and snipers' zone)
@@ -51,9 +51,8 @@ window:                         # G4: where the coin is in its move (5-minute ca
   min_candles: 6                # was 8
 
 desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
-  enabled: true                 # Claude on: the analyst and the skeptic review every coin that passes the code gates.
-                                # Set false (and when_unavailable: rules_only) for ACTIVITY MODE: no Claude, every coin that
-                                # passes the code gates is bought, which the rules-only shadow book measured at about -11% a trade.
+  enabled: false                # Claude OFF (hot mode buys by itself). Set true (and when_unavailable: skip) for the analyst and the
+                                # skeptic to review every coin that passes the gates; with hot.enabled they would review hot coins.
   model: claude-sonnet-5-5      # claude-opus-5-5 is stronger and about twice the price; claude-haiku-5-5 is the cheapest
   effort_analyst: low
   effort_skeptic: medium
@@ -68,7 +67,7 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
   min_conviction: 0.0
   allowed_setups: [organic_trend, early_breakout, late_chase, single_driver, wash_or_bot, fading]
   allowed_windows: [early, running, late, exhausted]
-  when_unavailable: skip        # skip | rules_only  (rules_only = trade on code gates alone when the desk is off or down)
+  when_unavailable: rules_only  # skip | rules_only  (rules_only = trade on the gates alone when the desk is off or down)
   price_in_per_mtok: 2.0        # check https://platform.claude.com pricing for the model you pick
   price_out_per_mtok: 10.0
   web_search_usd_per_call: 0.01
@@ -100,6 +99,23 @@ risk:                           # hard limits; nothing overrides these
   max_drawdown_pct: 25          # from the high: kill switch, sell everything, stop
   max_consecutive_api_errors: 10
   min_sol_for_fees: 0.05
+
+hot:                            # HOT MODE (paper): no strategy filters; buy coins people are looking at, in a market-cap band.
+  enabled: true                 # false = the strict funnel (gates, holders, RugCheck, window) with or without Claude
+  min_market_cap_usd: 20000
+  max_market_cap_usd: 50000
+  min_liquidity_usd: 3000       # enough pool to trade a few dollars
+  min_age_minutes: 3            # the very first minutes are bots and insiders
+  max_age_hours: 48
+  min_txns_1h: 30               # some real trading: a promoted coin nobody trades is not hot
+  min_attention_signals: 1      # of: GeckoTerminal trending, Jupiter trending, newly listed, boosted, very active
+  jupiter_rank_limit: 50        # a place in Jupiter's top 50 trending counts
+  active_vol_to_mcap_1h: 1.0    # "very active": the hour's volume is at least the market cap
+  allow_bonding_curve: true     # pump.fun coins still on their curve: that is where 20-50K market caps live
+  require_authorities_revoked: true   # a coin whose creator can still mint or freeze is refused (cheap, one RPC call)
+  max_price_impact_pct: 8       # the real quote for our ticket must still be sane on a small pool...
+  max_round_trip_loss_pct: 20   # ...and selling it straight back must work (this is the honeypot check)
+  max_slippage_tolerance_pct: 15
 
 paper:
   slippage_bps: 150             # extra cost per side on paper, for the seconds a live order takes

@@ -116,6 +116,27 @@ class Track:
 
 
 @dataclass(frozen=True)
+class Hot:
+    """HOT MODE: skip the strategy filters and buy coins that many people are looking at, in a market-cap band. Only
+    what makes a coin impossible to trade or an obvious trap stays (authorities, a route to sell it back)."""
+    enabled: bool
+    min_market_cap_usd: float
+    max_market_cap_usd: float
+    min_liquidity_usd: float
+    min_age_minutes: float
+    max_age_hours: float
+    min_txns_1h: int
+    min_attention_signals: int  # how many of: GeckoTerminal trending, Jupiter trending, newly listed, boosted, very active
+    jupiter_rank_limit: int  # a place on Jupiter's trending lists counts as attention up to this rank
+    active_vol_to_mcap_1h: float  # "very active": an hour's volume at least this multiple of market cap
+    allow_bonding_curve: bool  # pump.fun coins still on their curve (where 20-50K market caps live)
+    require_authorities_revoked: bool
+    max_price_impact_pct: float
+    max_round_trip_loss_pct: float
+    max_slippage_tolerance_pct: float
+
+
+@dataclass(frozen=True)
 class DeskConfig:
     scan: Scan
     gates: Gates
@@ -127,6 +148,7 @@ class DeskConfig:
     risk: Risk
     paper: Paper
     track: Track
+    hot: Hot
 
 
 def _build(cls, data: dict, section: str):
@@ -146,7 +168,10 @@ def load_config(path: str | Path = "config/desk.yaml") -> DeskConfig:
                    holders=_build(HolderRules, d.get("holders") or {}, "holders"), depth=_build(Depth, d.get("depth") or {}, "depth"),
                    window=_build(Window, d.get("window") or {}, "window"), desk=_build(DeskCfg, d.get("desk") or {}, "desk"),
                    plan=_build(PlanRules, plan, "plan"), risk=_build(Risk, d.get("risk") or {}, "risk"),
-                   paper=_build(Paper, d.get("paper") or {}, "paper"), track=_build(Track, d.get("track") or {}, "track"))
+                   paper=_build(Paper, d.get("paper") or {}, "paper"), track=_build(Track, d.get("track") or {}, "track"),
+                   hot=_build(Hot, d.get("hot") or {}, "hot"))
+    if c.hot.min_market_cap_usd > c.hot.max_market_cap_usd:
+        raise ValueError("hot.min_market_cap_usd is above hot.max_market_cap_usd")
     if c.desk.when_unavailable not in ("skip", "rules_only"):
         raise ValueError("desk.when_unavailable must be skip or rules_only")
     if not 0 < c.risk.position_pct <= 20:

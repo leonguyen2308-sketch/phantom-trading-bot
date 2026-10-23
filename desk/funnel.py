@@ -72,6 +72,52 @@ def g1_market(m: dict, dex_id: str, jt: dict | None, g) -> list[str]:
     return why
 
 
+def attention_signals(m: dict, hot) -> list[str]:
+    """Why people are looking at a coin, from numbers only: on GeckoTerminal's trending pools, high on Jupiter's trending
+    lists, newly listed, paying for DexScreener promotion, or trading volume that turns over its market cap in an hour."""
+    out = []
+    if m.get("trending_rank_gecko"):
+        out.append(f"GeckoTerminal trending #{m['trending_rank_gecko']}")
+    rank = m.get("trending_rank_jupiter")
+    if rank and rank <= hot.jupiter_rank_limit:
+        out.append(f"Jupiter trending #{rank}")
+    if m.get("new_listing"):
+        out.append("new listing")
+    if m.get("boosted"):
+        out.append("boosted")
+    if (m.get("vol_to_mcap_1h") or 0) >= hot.active_vol_to_mcap_1h:
+        out.append(f"volume {m['vol_to_mcap_1h']:.1f}x market cap in an hour")
+    return out
+
+
+def g1_hot(m: dict, dex_id: str, hot) -> list[str]:
+    """HOT MODE's one gate: in the market-cap band, a pool that can be traded, young enough, some real trading, and
+    enough attention. Nothing about holders, volume quality, price run-up or momentum."""
+    why = []
+    mc = m.get("mcap_usd")
+    if mc is None or not hot.min_market_cap_usd <= mc <= hot.max_market_cap_usd:
+        why.append(f"market cap {'unknown' if mc is None else f'${mc:,.0f}'} outside ${hot.min_market_cap_usd:,.0f}-${hot.max_market_cap_usd:,.0f}")
+    if dex_id == "pumpfun" and not hot.allow_bonding_curve:
+        why.append("still on the pump.fun bonding curve")
+    if (m.get("liquidity_usd") or 0) < hot.min_liquidity_usd:
+        why.append(f"liquidity ${m.get('liquidity_usd') or 0:,.0f}")
+    age = m.get("age_min")
+    if age is None:
+        why.append("pool age unknown")
+    elif age < hot.min_age_minutes:
+        why.append(f"only {age:.0f} min old")
+    elif age > hot.max_age_hours * 60:
+        why.append(f"{age / 60:.0f}h old")
+    tx = (m.get("buys_1h") or 0) + (m.get("sells_1h") or 0)
+    if tx < hot.min_txns_1h:
+        why.append(f"{tx:.0f} trades in the last hour")
+    if not m.get("sells_1h"):
+        why.append("no sells in the last hour (honeypot?)")
+    if len(attention_signals(m, hot)) < hot.min_attention_signals:
+        why.append("nobody is looking at it (not trending, new or boosted)")
+    return why
+
+
 def g2_onchain(info, h: dict, rug: dict | None, r) -> list[str]:
     """`info` is a fomo.chain.MintInfo; `h` has top1_pct, top10_pct, fresh_share_pct."""
     why = []

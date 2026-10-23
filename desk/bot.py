@@ -12,6 +12,7 @@ sell it twice.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import queue
@@ -355,7 +356,10 @@ class Desk:
             self._count("universe", m)
             jt, dx = universe.get(m), pairs.get(m)
             mf = {**market_fields(jt, dx, now), **self._attention(m, now)}
-            why = funnel.g1_market(mf, (dx or {}).get("dexId", ""), jt, self.cfg.gates)
+            if self.cfg.hot.enabled:  # hot mode: market-cap band + attention, nothing else
+                why = funnel.g1_hot(mf, (dx or {}).get("dexId", ""), self.cfg.hot)
+            else:
+                why = funnel.g1_market(mf, (dx or {}).get("dexId", ""), jt, self.cfg.gates)
             if why:
                 self._kill("market", m, why, cool=False)
                 continue
@@ -392,7 +396,7 @@ class Desk:
         """Who gets the deep checks first when there are more finalists than slots: the most active coins, and those
         more people are looking at (trending on GeckoTerminal or Jupiter, or newly listed). Order only: it never lets a
         coin past a gate."""
-        score = (mf.get("vol_accel") or 0) * (mf.get("organic_score") or 50)
+        score = (mf.get("vol_accel") or 1) * (mf.get("organic_score") or 50)
         if mf.get("trending_rank_gecko"):
             score *= 1.5
         if mf.get("trending_rank_jupiter") and mf["trending_rank_jupiter"] <= 30:
@@ -464,42 +468,51 @@ class Desk:
             self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
             self._api_error(f"RPC: {type(e).__name__}: {e}", "rpc")
             return "error"
+        hot = cfg.hot.enabled
+        rules = cfg.holders
+        if hot:  # hot mode asks for revoked authorities only if configured; Token-2022 traps are always refused
+            rules = dataclasses.replace(cfg.holders, require_mint_authority_revoked=cfg.hot.require_authorities_revoked,
+                                        require_freeze_authority_revoked=cfg.hot.require_authorities_revoked)
         try:
             info = self._mint_info(mint)
         except Exception as e:
             return rpc_error(e)
-        if why := funnel.g2_onchain(info, {}, None, cfg.holders):  # mint or freeze authority, Token-2022 extensions
+        if why := funnel.g2_onchain(info, {}, None, rules):  # mint or freeze authority, Token-2022 extensions
             return die(why)
-        try:
-            top = self.holders.top(mint, pools=(dx or {}).get("_pair_addresses") or ())
-        except Exception as e:
-            return rpc_error(e)
-        hf = {"top1_pct": round(top[0][1], 3) if top else None, "top10_pct": round(sum(p for _, p in top[:10]), 3) if top else None,
-              "fresh_share_pct": None, "rugcheck_risk": None}
-        if why := funnel.g2_onchain(info, hf, None, cfg.holders):  # concentration
-            return die(why)
-        rug = self.rug.summary(mint)
-        hf["rugcheck_risk"] = _num(rug.get("score_normalised")) if rug else None
-        if why := funnel.g2_onchain(info, hf, rug, cfg.holders):  # RugCheck
-            return die(why)
-        try:
-            fresh, _ = self.holders.fresh_share(top, cfg.holders.fresh_wallet_hours) if top else (None, 0)
-            self._api_ok("rpc")
-        except Exception as e:
-            return rpc_error(e)
-        hf["fresh_share_pct"] = round(fresh, 3) if fresh is not None else None
-        why = funnel.g2_onchain(info, hf, rug, cfg.holders)
-        if why:
-            return die(why)
-        unknown = funnel.g2_unknowns(hf, rug)
-        if unknown and (reason := getattr(self.rug, "last_error", {}).get(mint)):
-            unknown = [u.replace("(unknown is not a pass)", f"({reason}; unknown is not a pass)") for u in unknown]
-        if unknown:  # can't see it, so can't buy it; looked at again later, not banned for hours
-            self._kill("onchain", mint, unknown, cool=False)
-            self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
-            self._feed("KILL", "SCOUT", f"${symbol} · on-chain: {'; '.join(unknown)}")
-            return "onchain"
-        self._count("onchain", mint)
+        if hot:  # no holder, wallet-age or RugCheck lookups: no RPC calls beyond the authorities, and no unknowns to wait for
+            hf, rug = {"top1_pct": None, "top10_pct": None, "fresh_share_pct": None, "rugcheck_risk": None}, None
+            self._count("onchain", mint)
+        else:
+            try:
+                top = self.holders.top(mint, pools=(dx or {}).get("_pair_addresses") or ())
+            except Exception as e:
+                return rpc_error(e)
+            hf = {"top1_pct": round(top[0][1], 3) if top else None, "top10_pct": round(sum(p for _, p in top[:10]), 3) if top else None,
+                  "fresh_share_pct": None, "rugcheck_risk": None}
+            if why := funnel.g2_onchain(info, hf, None, cfg.holders):  # concentration
+                return die(why)
+            rug = self.rug.summary(mint)
+            hf["rugcheck_risk"] = _num(rug.get("score_normalised")) if rug else None
+            if why := funnel.g2_onchain(info, hf, rug, cfg.holders):  # RugCheck
+                return die(why)
+            try:
+                fresh, _ = self.holders.fresh_share(top, cfg.holders.fresh_wallet_hours) if top else (None, 0)
+                self._api_ok("rpc")
+            except Exception as e:
+                return rpc_error(e)
+            hf["fresh_share_pct"] = round(fresh, 3) if fresh is not None else None
+            why = funnel.g2_onchain(info, hf, rug, cfg.holders)
+            if why:
+                return die(why)
+            unknown = funnel.g2_unknowns(hf, rug)
+            if unknown and (reason := getattr(self.rug, "last_error", {}).get(mint)):
+                unknown = [u.replace("(unknown is not a pass)", f"({reason}; unknown is not a pass)") for u in unknown]
+            if unknown:  # can't see it, so can't buy it; looked at again later, not banned for hours
+                self._kill("onchain", mint, unknown, cool=False)
+                self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
+                self._feed("KILL", "SCOUT", f"${symbol} · on-chain: {'; '.join(unknown)}")
+                return "onchain"
+            self._count("onchain", mint)
 
         # G3: a real quote for our ticket, and selling it straight back
         try:
@@ -518,7 +531,10 @@ class Desk:
             self._api_error(f"quote: {_why(e)}", "jupiter")
             return "error"
         self._api_ok("jupiter")
-        df, why = funnel.g3_depth(q, back, info.decimals, cfg.depth)
+        depth = cfg.depth if not hot else dataclasses.replace(
+            cfg.depth, max_price_impact_pct=cfg.hot.max_price_impact_pct, max_round_trip_loss_pct=cfg.hot.max_round_trip_loss_pct,
+            max_slippage_tolerance_pct=cfg.hot.max_slippage_tolerance_pct)
+        df, why = funnel.g3_depth(q, back, info.decimals, depth)
         if why:
             self._kill("depth", mint, why, cool=True)
             self._feed("KILL", "SCOUT", f"${symbol} · depth: {'; '.join(why[:2])}")
@@ -533,12 +549,13 @@ class Desk:
                 candles = self.gecko.candles(pool, 5, 72, token=mint)
             except Exception as e:  # GeckoTerminal throttled or down: not a verdict on the coin, so no window kill
                 log.info("candles unavailable for %s: %s", symbol, _why(e))
-                self._cool[mint] = now + 120
-                return "error"
+                if not hot:
+                    self._cool[mint] = now + 120
+                    return "error"
         cf = candle_fields(candles, now)
-        why = funnel.g4_window(cf, len(candles), cfg.window)
+        why = [] if hot else funnel.g4_window(cf, len(candles), cfg.window)  # hot mode: no verdict on the chart
         entry = q.usd / (q.raw / 10 ** info.decimals) if q.raw else 0.0
-        plan, plan_why = make_plan(entry, cf.get("atr_5m_pct"), mf.get("vol_5m_usd") or 0.0, cfg.plan)
+        plan, plan_why = make_plan(entry, cf.get("atr_5m_pct"), mf.get("vol_5m_usd") or 0.0, cfg.plan, strict=not hot)
         if why or not plan:
             self._kill("window", mint, why + plan_why, cool=False)
             self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
@@ -551,8 +568,10 @@ class Desk:
                      "take_profits_pct": list(cfg.plan.ladder_pct), "take_profit_share_each": cfg.plan.ladder_fraction,
                      "trail_pct_after_first_take_profit": cfg.plan.trail_pct, "book_pct": cfg.plan.book_pct,
                      "round_trip_cost_pct": cfg.plan.round_trip_cost_pct, "max_hold_hours": cfg.plan.max_hold_hours}
-        self._feed("PICK", "SCOUT", f"${symbol} passed every gate ({station}) · mcap ${(snap.get('mcap_usd') or 0) / 1e6:.2f}M · "
-                                    f"liq ${(snap.get('liquidity_usd') or 0) / 1e3:.0f}K · stop -{plan.stop_pct:.0f}%")
+        cap = snap.get("mcap_usd") or 0
+        why_hot = f" · {', '.join(funnel.attention_signals(mf, cfg.hot))}" if hot else ""
+        self._feed("PICK", "SCOUT", f"${symbol} passed every gate ({station}) · mcap {f'${cap / 1e6:.2f}M' if cap >= 1e6 else f'${cap / 1e3:.0f}K'} · "
+                                    f"liq ${(snap.get('liquidity_usd') or 0) / 1e3:.0f}K · stop -{plan.stop_pct:.0f}%{why_hot}")
 
         # the desk
         opinion, desk_note, busy = None, "", False

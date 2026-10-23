@@ -1,4 +1,5 @@
 import dataclasses
+import json
 from datetime import datetime, timezone
 
 import httpx
@@ -21,8 +22,9 @@ def load_config(path="config/desk.yaml"):
     """The shipped gates and limits, with the desk's strict entry rules: these tests are about those rules, and
     config/desk.yaml may be running a looser experiment."""
     c = _load_config(path)
-    return dataclasses.replace(c, desk=dataclasses.replace(c.desk, enabled=True, when_unavailable="skip", min_conviction=0.6,
-                                                           allowed_setups=["organic_trend", "early_breakout"], allowed_windows=["early", "running"]))
+    return dataclasses.replace(c, hot=dataclasses.replace(c.hot, enabled=False),
+                               desk=dataclasses.replace(c.desk, enabled=True, when_unavailable="skip", min_conviction=0.6,
+                                                        allowed_setups=["organic_trend", "early_breakout"], allowed_windows=["early", "running"]))
 
 GOOD, BAD = "Good" + "1" * 40, "Bad" + "1" * 41
 
@@ -880,7 +882,9 @@ def test_a_network_outage_pauses_buying_but_never_fires_the_kill_switch(tmp_path
 def test_the_shipped_experiment_skips_unclear_and_a_30_percent_hour_and_buys_the_rest(tmp_path):
     """config/desk.yaml as shipped: only 'unclear' and a coin up more than 30% in the hour are turned away."""
     cfg = _load_config("config/desk.yaml")
-    assert cfg.gates.max_price_change_1h_pct == 30
+    cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, enabled=False),
+                              desk=dataclasses.replace(cfg.desk, enabled=True, when_unavailable="skip"))
+    assert cfg.gates.max_price_change_1h_pct == 30 and cfg.desk.allowed_setups and cfg.desk.min_conviction == 0
     for setup in ("unclear",):
         d, w, clock = make(tmp_path / setup, cfg=cfg, desk=FakeDesk(setup=setup, conviction=0.2))
         only_good(w)
@@ -903,8 +907,8 @@ def test_the_shipped_experiment_skips_unclear_and_a_30_percent_hour_and_buys_the
 # ---------------------------------------------------------------- wider and faster scan
 def test_the_scan_is_faster_and_wider_than_before():
     c = _load_config("config/desk.yaml")
-    assert c.scan.interval_seconds == 30 and c.scan.max_universe == 600 and c.scan.deep_checks_per_sweep == 6
-    assert "toptraded/1h" in c.scan.extra_jupiter_lists and c.scan.gecko_discovery_every == 4
+    assert c.scan.interval_seconds == 30 and c.scan.max_universe == 600 and c.scan.deep_checks_per_sweep == 10
+    assert "toptraded/1h" in c.scan.extra_jupiter_lists and c.scan.gecko_discovery_every == 2
 
 
 def test_gecko_trending_and_new_pools_join_the_universe_and_their_ranks_reach_the_snapshot(tmp_path):
@@ -1043,7 +1047,7 @@ def test_geckoterminal_never_makes_a_call_wait_long_on_a_429():
 
 
 def test_the_universe_cap_keeps_the_coins_people_are_looking_at(tmp_path):
-    cfg = _load_config("config/desk.yaml")
+    cfg = load_config("config/desk.yaml")
     cfg = dataclasses.replace(cfg, scan=dataclasses.replace(cfg.scan, max_universe=1))
     d, w, clock = make(tmp_path, cfg=cfg)
     w.top = lambda kind, window, limit: [] if kind == "toptrending" else [w.jt(BAD)]  # Jupiter's organic list has BAD first...
@@ -1079,7 +1083,7 @@ def test_a_list_the_server_does_not_know_is_asked_again_after_an_hour(tmp_path):
 
 
 def test_no_buy_possible_means_no_deep_checks_and_no_skip_spam(tmp_path):
-    cfg = _load_config("config/desk.yaml")
+    cfg = load_config("config/desk.yaml")
     cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=1, position_pct=20, max_position_usd=50))
     d, w, clock = make(tmp_path, cfg=cfg)
     only_good(w)
@@ -1100,7 +1104,7 @@ def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_pat
         def review(self, *a, **k):
             clock.t += 100  # a review that takes longer than the whole sweep interval
             return super().review(*a, **k)
-    cfg = _load_config("config/desk.yaml")
+    cfg = load_config("config/desk.yaml")
     cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=4, position_pct=10, max_position_usd=30))
     d, w, clock = make(tmp_path, cfg=cfg, desk=Slow(verdict="block"))
     w.price[BAD] = 0.001
@@ -1112,17 +1116,14 @@ def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_pat
     assert d.desk.calls == 2
 
 
-def test_the_shipped_config_has_claude_on_and_a_down_desk_buys_nothing(tmp_path):
+def test_the_shipped_config_is_hot_mode_with_claude_off():
     cfg = _load_config("config/desk.yaml")
-    assert cfg.desk.enabled and cfg.desk.when_unavailable == "skip"
-    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))  # the desk is down (no credit, no network)
-    only_good(w)
-    d.sweep()
-    assert d.journal.open_positions("paper") == []  # never buys on rules alone by accident
+    assert cfg.hot.enabled and (cfg.hot.min_market_cap_usd, cfg.hot.max_market_cap_usd) == (20000, 50000)
+    assert not cfg.desk.enabled and cfg.desk.when_unavailable == "rules_only"
 
 
 def test_activity_mode_is_buying_everything_that_passes_the_code_gates(tmp_path):
-    cfg = _load_config("config/desk.yaml")
+    cfg = load_config("config/desk.yaml")
     cfg = dataclasses.replace(cfg, desk=dataclasses.replace(cfg.desk, enabled=False, when_unavailable="rules_only"))
     d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))
     only_good(w)
@@ -1130,3 +1131,81 @@ def test_activity_mode_is_buying_everything_that_passes_the_code_gates(tmp_path)
     assert len(d.journal.open_positions("paper")) == 1
     (dec,) = d.journal.decisions("paper", 5)
     assert dec["action"] == "buy" and "rules alone" in dec["note"]
+
+
+# ---------------------------------------------------------------- hot mode (the shipped config)
+def hot_world(tmp_path, cfg=None, price=3e-5, trending=True):
+    """GOOD at a ~$30K market cap (the fakes put it at price x 1e9), on GeckoTerminal's trending list."""
+    d, w, clock = make(tmp_path, cfg=cfg or _load_config("config/desk.yaml"), desk=FakeDesk(fail=True))
+    only_good(w)
+    w.price[GOOD] = price
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "pool" + GOOD[:6], "rank": 4}] if trending and kind == "trending_pools" else []
+    return d, w, clock
+
+
+def test_hot_mode_buys_a_watched_coin_in_the_band_with_almost_no_checks(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    w.top10[GOOD] = 90.0  # one holder owns nearly everything: a strict funnel would refuse; hot mode doesn't look
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    assert p["mint"] == GOOD and w.calls["holders"] == 0  # no holder, wallet-age or RugCheck lookups
+    feed = " ".join(e["text"] for e in d.journal.events("paper", 20))
+    assert "$30K" in feed and "GeckoTerminal trending #4" in feed
+
+
+def test_hot_mode_skips_a_coin_outside_the_band_or_that_nobody_is_looking_at(tmp_path):
+    d, w, clock = hot_world(tmp_path, price=1e-3)  # a $1M market cap
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+    d, w, clock = hot_world(tmp_path / "quiet", trending=False)
+    w.top = lambda kind, window, limit: []  # not on Jupiter's lists either
+    real = w.tokens
+    w.tokens = lambda mints: {m: {**p, "volume": {"m5": 10, "h1": 1000, "h6": 5000}} for m, p in real(mints).items()}  # and nobody trades it
+    w.discovered = lambda: [GOOD]
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+
+
+def test_hot_mode_still_refuses_a_live_mint_authority_and_a_coin_it_cannot_sell_back(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    w.mint_auth.add(GOOD)
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+    d, w, clock = hot_world(tmp_path / "honeypot")
+    w.no_sell.add(GOOD)
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+
+
+def test_hot_mode_buys_pumpfun_curve_coins_unless_told_not_to(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    w.dex_id[GOOD] = "pumpfun"
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, allow_bonding_curve=False))
+    d, w, clock = hot_world(tmp_path / "no-curve", cfg=cfg)
+    w.dex_id[GOOD] = "pumpfun"
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+
+
+def test_hot_mode_does_not_wait_for_a_chart(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+
+    def down(*a, **k):
+        raise RuntimeError("429")
+    w.candles = down
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    assert json.loads(p["plan"])["stop"] == pytest.approx(p["entry_price"] * 0.85, rel=0.01)  # no ATR: the 15% minimum stop
+
+
+def test_hot_mode_keeps_every_risk_limit(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=1))
+    d, w, clock = hot_world(tmp_path, cfg=cfg)
+    w.price[BAD] = 3e-5
+    w.pools = lambda kind: [{"mint": GOOD, "pool": "", "rank": 1}, {"mint": BAD, "pool": "", "rank": 2}] if kind == "trending_pools" else []
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1  # the second coin finds no room

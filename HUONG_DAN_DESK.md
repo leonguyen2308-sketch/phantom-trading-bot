@@ -260,10 +260,12 @@ Xem kết quả bất cứ lúc nào:
 - Bot **trừ tiền Claude** vào lãi paper khi chấm điểm. Lãi $6 mà tiền Claude $7 thì vẫn là lỗ.
 - Nếu sau 72 giờ paper vẫn lỗ: **đừng bật live**. Bot sẽ không cho bật đâu.
 
-**Hai chế độ chạy giả:**
-- **Chế độ có Claude (đang bật):** Claude xem từng coin qua các kiểm tra bằng code, chỉ loại coin `unclear`, và SKEPTIC vẫn có quyền chặn. Tốn khoảng 1–2 xu mỗi coin.
-- **Chế độ hoạt động:** mở `config/desk.yaml`, mục `desk:` đặt `enabled: false` và `when_unavailable: rules_only`. Claude tắt, bot mua **mọi coin qua các kiểm tra bằng code**, vào lệnh nhiều nhất và không tốn tiền Claude. Sổ shadow cho thấy kiểu này lỗ khoảng 11% mỗi lệnh.
+**Ba chế độ chạy giả (đổi trong `config/desk.yaml`):**
+- **Chế độ HOT (đang bật):** mục `hot:` có `enabled: true`. Bot **bỏ hết các luật lọc chiến lược**. Nó chỉ mua coin đang được nhiều người chú ý (trending trên GeckoTerminal hoặc Jupiter, coin mới lên sàn, coin có trả tiền quảng bá, hoặc volume cả giờ bằng cả vốn hoá), vốn hoá từ **$20.000 đến $50.000**, kể cả coin pump.fun còn trên bonding curve. Vẫn giữ: quyền mint/freeze phải bị thu hồi, phải thử bán lại được (chống honeypot), và mọi giới hạn rủi ro. Claude tắt.
+- **Chế độ phễu chặt:** đặt `hot:` → `enabled: false`. Bot lọc kỹ (holders, RugCheck, thời điểm vào lệnh). Thêm `desk:` → `enabled: true` và `when_unavailable: skip` để Claude xem từng coin và có quyền chặn.
 - Sau khi sửa file, chạy `git checkout -- config/desk.yaml` **trước** mỗi lần `git pull` để khỏi báo lỗi, rồi chạy lại `scripts/install-desk-service.sh paper`.
+
+⚠️ Vùng vốn hoá $20.000–$50.000 là nơi **nhiều coin lừa đảo nhất** (nhiều coin pump.fun bị bơm rồi bán tháo). Chế độ HOT chỉ dùng để thử bằng tiền giả.
 
 ## R. Tạo ví riêng cho bot
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -99,6 +100,8 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
     from phantom.server import make_app, serve_in_background
 
     cfg = load_config(CONFIG)
+    if mode == "demo":  # the made-up market has coins of every size: show the strict funnel and the desk, not the hot band
+        cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, enabled=False), desk=dataclasses.replace(cfg.desk, enabled=True))
     cfg_hash = file_sha256(CONFIG)
     STATE.mkdir(exist_ok=True)
     tick = 1.0
