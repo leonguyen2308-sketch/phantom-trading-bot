@@ -1201,6 +1201,51 @@ def test_hot_mode_does_not_wait_for_a_chart(tmp_path):
     assert json.loads(p["plan"])["stop"] == pytest.approx(p["entry_price"] * 0.85, rel=0.01)  # no ATR: the 15% minimum stop
 
 
+def test_hot_mode_makes_no_chart_call_and_sizes_the_stop_from_the_coins_own_moves(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    charts = []
+    real_candles = w.candles
+    w.candles = lambda *a, **k: charts.append(a) or real_candles(*a, **k)
+    real = w.tokens
+    w.tokens = lambda mints: {m: {**p, "priceChange": {**p["priceChange"], "h1": 60}} for m, p in real(mints).items()}  # +10%/5 min on average
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    assert charts == []  # use_candles is off: no ~3 s Gecko wait per coin
+    stop = json.loads(p["plan"])["stop"]
+    assert stop == pytest.approx(p["entry_price"] * 0.70, rel=0.01)  # a wild coin gets the widest stop, 30%
+
+
+def test_hot_mode_reads_the_chart_when_asked_to(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, use_candles=True))
+    d, w, clock = hot_world(tmp_path, cfg=cfg)
+    charts = []
+    real_candles = w.candles
+    w.candles = lambda *a, **k: charts.append(a) or real_candles(*a, **k)
+    d.sweep()
+    assert charts and len(d.journal.open_positions("paper")) == 1
+
+
+def test_hot_mode_looks_at_a_depth_kill_again_in_minutes_not_hours(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    w.no_sell.add(GOOD)
+    d.sweep()
+    cfg = d.cfg
+    assert d._cool[GOOD] - clock() == pytest.approx(cfg.scan.recheck_passed_minutes * 60, abs=5)
+    d, w, clock = make(tmp_path / "strict", cfg=_load_config("config/desk.yaml"), desk=FakeDesk(fail=True))  # strict funnel keeps the long ban
+    only_good(w)
+    w.no_sell.add(GOOD)
+    d.cfg = dataclasses.replace(d.cfg, hot=dataclasses.replace(d.cfg.hot, enabled=False))
+    d.sweep()
+    assert d._cool.get(GOOD, 0) - clock() == pytest.approx(d.cfg.scan.recheck_killed_minutes * 60, abs=5)
+
+
+def test_dashboard_says_which_mode_is_running(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    s = d.dashboard_state()
+    assert s["hot"] is True and s["claude"] == d.cfg.desk.enabled
+
+
 def test_hot_mode_keeps_every_risk_limit(tmp_path):
     cfg = _load_config("config/desk.yaml")
     cfg = dataclasses.replace(cfg, risk=dataclasses.replace(cfg.risk, max_open_positions=1))

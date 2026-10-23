@@ -112,6 +112,7 @@ hot:                            # HOT MODE (paper): no strategy filters; buy coi
   jupiter_rank_limit: 50        # a place in Jupiter's top 50 trending counts
   active_vol_to_mcap_1h: 1.0    # "very active": the hour's volume is at least the market cap
   allow_bonding_curve: true     # pump.fun coins still on their curve: that is where 20-50K market caps live
+  use_candles: false            # false = size the stop from the 5m/1h price moves (no chart call, so no ~3 s wait per coin)
   require_authorities_revoked: true   # a coin whose creator can still mint or freeze is refused (cheap, one RPC call)
   max_price_impact_pct: 8       # the real quote for our ticket must still be sane on a small pool...
   max_round_trip_loss_pct: 20   # ...and selling it straight back must work (this is the honeypot check)

@@ -203,10 +203,11 @@ function render(s) {
   $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + (s.mode === "demo" ? ". Restart the demo to clear it." : ". Everything is being sold; buying is stopped until ./desk.sh reset.");
   $("blockBanner").hidden = !s.blocked || s.killed;
   $("blockBanner").textContent = "No new buys: " + (s.blocked || "");
-  $("sub").textContent = `day ${s.day} · ${money(s.balance)} bank · code gates, Claude vetoes`;
-  $("ai").textContent = `AI $${s.ai.spent.toFixed(2)} / $${s.ai.budget} · ${s.ai.model}`;
+  $("sub").textContent = `day ${s.day} · ${money(s.balance)} bank · ` +
+    (s.hot ? "hot mode: coins people are watching, band-limited, minimal filters" : s.claude ? "code gates, Claude vetoes" : "code gates, rules only");
+  $("ai").textContent = s.claude ? `AI $${s.ai.spent.toFixed(2)} / $${s.ai.budget} · ${s.ai.model}` : "AI off";
   $("modeChip").className = "pill " + (s.killed ? "off" : s.mode);
-  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase();
+  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase() + (s.hot ? " · HOT" : "");
   $("clock").textContent = hhmm(s.now) + " UTC";
   $("bal").textContent = money(s.balance);
   $("pnl").textContent = `${signed(s.pnl)} (${pct(s.pnlPct)})`;

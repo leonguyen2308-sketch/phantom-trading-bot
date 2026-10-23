@@ -518,7 +518,9 @@ class Desk:
         try:
             q = self.broker.quote_buy(mint, ticket)
         except ValueError as e:
-            self._kill("depth", mint, [f"no buy route ({e})"], cool=True)
+            self._kill("depth", mint, [f"no buy route ({e})"], cool=not hot)
+            if hot:  # a small pool's depth changes in minutes: look again soon, not in 6 hours
+                self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
             return "depth"
         except Exception as e:
             self._api_error(f"quote: {_why(e)}", "jupiter")
@@ -536,7 +538,9 @@ class Desk:
             max_slippage_tolerance_pct=cfg.hot.max_slippage_tolerance_pct)
         df, why = funnel.g3_depth(q, back, info.decimals, depth)
         if why:
-            self._kill("depth", mint, why, cool=True)
+            self._kill("depth", mint, why, cool=not hot)
+            if hot:
+                self._cool[mint] = now + cfg.scan.recheck_passed_minutes * 60
             self._feed("KILL", "SCOUT", f"${symbol} · depth: {'; '.join(why[:2])}")
             return "depth"
         self._count("depth", mint)
@@ -544,7 +548,7 @@ class Desk:
         # G4: where it is in its move
         pool = (dx or {}).get("pairAddress") or ((jt or {}).get("firstPool") or {}).get("id") or self._pools.get(mint)
         candles = []
-        if pool:
+        if pool and (not hot or cfg.hot.use_candles):
             try:
                 candles = self.gecko.candles(pool, 5, 72, token=mint)
             except Exception as e:  # GeckoTerminal throttled or down: not a verdict on the coin, so no window kill
@@ -553,6 +557,8 @@ class Desk:
                     self._cool[mint] = now + 120
                     return "error"
         cf = candle_fields(candles, now)
+        if hot and not cfg.hot.use_candles:  # no chart: the coin's own recent moves stand in for its volatility
+            cf["atr_5m_pct"] = max(abs(mf.get("price_change_5m_pct") or 0), abs(mf.get("price_change_1h_pct") or 0) / 6.0) or None
         why = [] if hot else funnel.g4_window(cf, len(candles), cfg.window)  # hot mode: no verdict on the chart
         entry = q.usd / (q.raw / 10 ** info.decimals) if q.raw else 0.0
         plan, plan_why = make_plan(entry, cf.get("atr_5m_pct"), mf.get("vol_5m_usd") or 0.0, cfg.plan, strict=not hot)
@@ -1270,7 +1276,7 @@ class Desk:
             c["n"] += 1
             c["wins"] += int(d["pnl"] > 0)
         return {
-            "mode": mode, "now": now, "day": int((now - start_t) // 86400) + 1, "killed": self.kill.tripped, "killReason": self.kill.reason,
+            "mode": mode, "hot": self.cfg.hot.enabled, "claude": self.cfg.desk.enabled, "now": now, "day": int((now - start_t) // 86400) + 1, "killed": self.kill.tripped, "killReason": self.kill.reason,
             "blocked": self._buys_blocked(), "scanState": self.scan_state,
             "balance": round(self.equity_now, 2), "start": round(start, 2), "pnl": round(self.equity_now - start, 2),
             "pnlPct": round((self.equity_now / start - 1) * 100, 1) if start else 0.0, "equity": curve,

@@ -130,6 +130,7 @@ class Hot:
     jupiter_rank_limit: int  # a place on Jupiter's trending lists counts as attention up to this rank
     active_vol_to_mcap_1h: float  # "very active": an hour's volume at least this multiple of market cap
     allow_bonding_curve: bool  # pump.fun coins still on their curve (where 20-50K market caps live)
+    use_candles: bool  # fetch the 5m chart for the stop size (slow, rate limited); false sizes the stop from the 5m/1h moves
     require_authorities_revoked: bool
     max_price_impact_pct: float
     max_round_trip_loss_pct: float
