@@ -587,12 +587,12 @@ class Desk:
         if len(self._reviews) >= cfg.desk.max_reviews_per_hour:
             desk_note, busy = f"desk busy ({cfg.desk.max_reviews_per_hour} reviews this hour)", True
         else:
-            self._reviews.append(now)
             links = [w.get("url") for w in ((dx or {}).get("info") or {}).get("websites") or [] if isinstance(w, dict)]
             links += [s.get("url") for s in ((dx or {}).get("info") or {}).get("socials") or [] if isinstance(s, dict)]
             try:
                 self.scan_state = f"desk reviewing ${symbol}"
                 opinion = self.desk.review(LEGEND, snap, plan_view, symbol=symbol, mint=mint, links=[u for u in links if u])
+                self._reviews.append(now)  # only a review that happened counts toward the hour's cap (a disabled desk is not "busy")
                 self._api_ok("desk")
             except DeskUnavailable as e:
                 desk_note = str(e)
@@ -608,7 +608,7 @@ class Desk:
         reasons: list[str] = []
         mult = 1.0
         if opinion is None:
-            if cfg.desk.when_unavailable == "rules_only" and not busy:  # rules alone only when the desk is really down
+            if cfg.desk.when_unavailable == "rules_only" and (not busy or hot):  # rules alone when the desk is down (hot mode: or busy)
                 desk_note = (desk_note + " · trading on rules alone").strip(" ·")
             else:
                 reasons.append(f"no desk opinion ({desk_note or 'unavailable'})")

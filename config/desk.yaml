@@ -51,8 +51,8 @@ window:                         # G4: where the coin is in its move (5-minute ca
   min_candles: 6                # was 8
 
 desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
-  enabled: false                # Claude OFF (hot mode buys by itself). Set true (and when_unavailable: skip) for the analyst and the
-                                # skeptic to review every coin that passes the gates; with hot.enabled they would review hot coins.
+  enabled: true                 # Claude ON: the analyst and the skeptic look at every coin that passes the gates (hot coins too) and may
+                                # skip it ("unclear", or a block) or shrink it. false = the bot buys on the code gates alone.
   model: claude-sonnet-5-5      # claude-opus-5-5 is stronger and about twice the price; claude-haiku-5-5 is the cheapest
   effort_analyst: low
   effort_skeptic: medium
@@ -67,7 +67,8 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
   min_conviction: 0.0
   allowed_setups: [organic_trend, early_breakout, late_chase, single_driver, wash_or_bot, fading]
   allowed_windows: [early, running, late, exhausted]
-  when_unavailable: rules_only  # skip | rules_only  (rules_only = trade on the gates alone when the desk is off or down)
+  when_unavailable: rules_only  # skip | rules_only  (rules_only = trade on the gates alone when the desk is off or down; in hot mode
+                                # also when it is over its hourly review cap, so the cap never stops a buy)
   price_in_per_mtok: 2.0        # check https://platform.claude.com pricing for the model you pick
   price_out_per_mtok: 10.0
   web_search_usd_per_call: 0.01

@@ -1116,10 +1116,28 @@ def test_a_slow_sweep_stops_starting_deep_checks_and_picks_up_next_sweep(tmp_pat
     assert d.desk.calls == 2
 
 
-def test_the_shipped_config_is_hot_mode_with_claude_off():
+def test_the_shipped_config_is_hot_mode_with_claude_on():
     cfg = _load_config("config/desk.yaml")
     assert cfg.hot.enabled and (cfg.hot.min_market_cap_usd, cfg.hot.max_market_cap_usd) == (20000, 50000)
-    assert not cfg.desk.enabled and cfg.desk.when_unavailable == "rules_only"
+    assert cfg.desk.enabled and cfg.desk.when_unavailable == "rules_only"
+
+
+def test_hot_mode_buys_on_rules_alone_when_the_desk_is_over_its_hourly_cap(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, desk=dataclasses.replace(cfg.desk, max_reviews_per_hour=0))
+    d, w, clock = hot_world(tmp_path, cfg=cfg)
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+    (dec,) = d.journal.decisions("paper", 5)
+    assert dec["action"] == "buy" and "desk busy" in dec["note"] and "rules alone" in dec["note"]
+
+
+def test_a_desk_that_is_down_does_not_use_up_the_hourly_review_cap(tmp_path):
+    cfg = load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, desk=dataclasses.replace(cfg.desk, when_unavailable="rules_only", max_reviews_per_hour=1))
+    d, w, clock = make(tmp_path, cfg=cfg, desk=FakeDesk(fail=True))
+    d.sweep()  # GOOD and BAD both pass the gates; the desk is down for both, and neither was a review
+    assert d.desk.calls == 2 and len(d.journal.open_positions("paper")) == 2
 
 
 def test_activity_mode_is_buying_everything_that_passes_the_code_gates(tmp_path):
