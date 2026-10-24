@@ -1282,7 +1282,8 @@ def pace_cfg(**hot):
 
 def test_the_turbo_config_has_no_coin_checks_and_a_pace():
     cfg = _load_config("config/turbo.yaml")
-    assert cfg.hot.enabled and cfg.hot.starve_after_seconds == 60 and not cfg.desk.enabled
+    assert cfg.hot.enabled and cfg.hot.starve_after_seconds == 60 and cfg.hot.min_seconds_between_buys == 50
+    assert cfg.desk.enabled and cfg.desk.max_reviews_per_hour <= 15 and cfg.desk.when_unavailable == "rules_only"  # Claude sees a few, never gates the pace
     assert not cfg.hot.require_authorities_revoked and not cfg.hot.use_candles
     assert cfg.hot.max_market_cap_usd >= 1_000_000 and cfg.hot.starved_min_attention_signals == 0
     assert cfg.plan.max_hold_hours < 0.5  # a trade is over in minutes, so a new one can come in
@@ -1336,3 +1337,22 @@ def test_turbo_buys_do_not_buzz_the_phone(tmp_path):
     assert d.journal.open_positions("turbo") and sent == []
     d._feed("KILL", "CHIEF", "stop", alert=True)
     assert sent
+
+
+def test_the_pace_cap_stops_a_second_buy_too_soon_after_the_first(tmp_path):
+    cfg = _load_config("config/desk.yaml")
+    cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, min_seconds_between_buys=50))
+    d, w, clock = hot_world(tmp_path, cfg=cfg)
+    d._last_buy_t = clock.t - 49
+    assert d._too_soon()
+    d.sweep()
+    assert d.journal.open_positions("paper") == []  # 49 s since the last buy: not yet
+    clock.t += 2
+    assert not d._too_soon()
+    d.sweep()
+    assert len(d.journal.open_positions("paper")) == 1
+
+
+def test_the_pace_cap_is_off_in_plain_hot_mode(tmp_path):
+    d, w, clock = hot_world(tmp_path)
+    assert not d._too_soon()

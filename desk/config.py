@@ -136,6 +136,7 @@ class Hot:
     max_price_impact_pct: float
     max_round_trip_loss_pct: float
     max_slippage_tolerance_pct: float
+    min_seconds_between_buys: float  # 0 = off. A pace CAP: no new buy sooner than this after the last one (every buy pays ~3% in fees and slippage)
     starve_after_seconds: float  # 0 = off. Otherwise: no buy for this long and the gate loosens to the starved_* numbers until one is made
     starved_min_market_cap_usd: float
     starved_max_market_cap_usd: float

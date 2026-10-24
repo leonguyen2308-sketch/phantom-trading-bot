@@ -118,6 +118,7 @@ hot:                            # HOT MODE (paper): no strategy filters; buy coi
   max_price_impact_pct: 8       # the real quote for our ticket must still be sane on a small pool...
   max_round_trip_loss_pct: 20   # ...and selling it straight back must work (this is the honeypot check)
   max_slippage_tolerance_pct: 15
+  min_seconds_between_buys: 0   # 0 = off. config/turbo.yaml sets 50: never faster than about a buy a minute (each buy pays ~3% in costs)
   starve_after_seconds: 0       # 0 = off (HOT mode waits for a coin that fits). config/turbo.yaml sets 60: no buy for a minute, loosen the gate
   starved_min_market_cap_usd: 5000        # the numbers the gate loosens to when it is starved (only used when starve_after_seconds > 0)
   starved_max_market_cap_usd: 5000000

@@ -3,6 +3,7 @@
 # own kill switch, so it never touches the HOT/strict paper run in config/desk.yaml. It can never trade real money.
 #
 # What is NOT checked: holders, RugCheck, volume quality, price run-up, momentum, authorities, the chart.
+# Claude is ON but only reviews a few coins an hour (the rest trade on the rules); it can skip a coin or shrink the ticket.
 # What still is: a market cap and a pool in range, some trading, and a real quote to buy AND to sell it straight back
 # (without that a paper position could never be closed, and the results would be fiction), plus the risk limits.
 # If a minute passes without a buy the gate loosens (hot.starved_*) until one is made, so it keeps entering.
@@ -57,7 +58,7 @@ window:                         # G4: where the coin is in its move (5-minute ca
   min_candles: 6                # was 8
 
 desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
-  enabled: false   # Claude OFF: no checks, and a review per entry would cost more than the trades are worth
+  enabled: true                 # Claude ON: the analyst and the skeptic look at some of the coins (max_reviews_per_hour) and may skip one or shrink it
                                 # skip it ("unclear", or a block) or shrink it. false = the bot buys on the code gates alone.
   model: claude-sonnet-5-5      # claude-opus-5-5 is stronger and about twice the price; claude-haiku-5-5 is the cheapest
   effort_analyst: low
@@ -66,7 +67,7 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
   max_tokens: 8000
   daily_budget_usd: 1.5         # the desk stops (and the bot skips trades) after this much AI spend a day, per mode
                                 # (a paper run alongside live has its own; ./desk.sh desk-test counts as paper)
-  max_reviews_per_hour: 15      # was 8: the wider net sends more coins to the desk (the daily budget is the real cap)
+  max_reviews_per_hour: 8   # Claude sees about 8 coins an hour (a trade a minute would cost more in AI than it earns); the rest trade on the rules
   # Experiment (paper): the desk skips a coin only when the analyst calls it "unclear" (and the code gates above skip
   # one that rose over 30% in the hour). Every other pattern may be bought, at the skeptic's size. The strict rules
   # were min_conviction 0.6, setups [organic_trend, early_breakout], windows [early, running].
@@ -81,16 +82,16 @@ desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); cod
 
 plan:                           # the exit plan, written before entry (TP-first)
   stop_atr_mult: 3.0
-  min_stop_pct: 10
-  max_stop_pct: 20
-  ladder_pct: [15, 40]   # quick take-profits: a share at +15% and +40%
+  min_stop_pct: 7   # tight stop: in the first real hour 39 of 52 trades lost, and a coin that is down 7% usually keeps falling
+  max_stop_pct: 10   # never wider than 10% (it was 20%: losers cost twice as much)
+  ladder_pct: [10, 25]   # quick take-profits: a share at +10% and +25%
   ladder_fraction: 0.33         # share of the original position sold at each take-profit
-  trail_pct: 12                 # after the first take-profit: sell the rest if price falls 12% from its peak
-  book_pct: 100   # sell everything left at +100%
+  trail_pct: 7   # after the first take-profit: sell the rest if price falls 7% from its peak (never below breakeven)
+  book_pct: 50   # sell everything left at +50%
   volume_death_ratio: 0.25      # 5m volume below 25% of its level at entry...
   volume_death_checks: 2        # ...on 2 checks in a row: the move died, exit
-  unprofitable_hours: 0.15   # about 9 minutes: a trade that isn't in profit by then is sold, so the next one can come in
-  max_hold_hours: 0.33   # about 20 minutes at most
+  unprofitable_hours: 0.083   # about 5 minutes: a trade that isn't in profit by then is sold, so the next one can come in
+  max_hold_hours: 0.2   # about 12 minutes at most
   min_first_rung_r: 1.0         # first take-profit should be at least 1x the stop distance (not enforced in hot/turbo)
   round_trip_cost_pct: 3.0      # fees + slippage assumed for a full round trip
 
@@ -124,6 +125,7 @@ hot:                            # HOT MODE (paper): no strategy filters; buy coi
   max_price_impact_pct: 15       # the real quote for our ticket must still be sane on a small pool...
   max_round_trip_loss_pct: 30   # ...and selling it straight back must work (this is the honeypot check)
   max_slippage_tolerance_pct: 25
+  min_seconds_between_buys: 50  # a pace CAP: never a new buy sooner than 50 s after the last (each buy pays ~3% in fees and slippage: more buys = a faster bleed)
   starve_after_seconds: 60   # a minute without a buy: loosen the gate until one is made
   starved_min_market_cap_usd: 3000   # starved: ...any coin from $3K...
   starved_max_market_cap_usd: 10000000   # ...to $10M

@@ -380,8 +380,14 @@ class Desk:
         for m, jt, dx, mf in ready[: sc.deep_checks_per_sweep]:
             if self._stop.is_set() or self.clock() - started > 0.8 * sc.interval_seconds:
                 break  # the rest wait for the next sweep, in priority order
+            if self._too_soon():
+                break  # the pace cap: the next buy is not due yet
             self.evaluate(m, "scout", jt, dx, mf)
         self.scan_state = "idle"
+
+    def _too_soon(self) -> bool:
+        gap = self.cfg.hot.min_seconds_between_buys
+        return bool(self.cfg.hot.enabled and gap > 0 and self.clock() - self._last_buy_t < gap)
 
     def starved(self, now: float | None = None) -> bool:
         """Pace gate: hot.starve_after_seconds without a buy and the hot gate loosens (hot.starved_*) until one is made."""
