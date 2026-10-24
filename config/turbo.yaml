@@ -85,13 +85,13 @@ plan:                           # the exit plan, written before entry (TP-first)
   max_stop_pct: 20
   ladder_pct: [15, 40]   # quick take-profits: a share at +15% and +40%
   ladder_fraction: 0.33         # share of the original position sold at each take-profit
-  trail_pct: 12                 # after the first take-profit: sell the rest if price falls 30% from its peak
+  trail_pct: 12                 # after the first take-profit: sell the rest if price falls 12% from its peak
   book_pct: 100   # sell everything left at +100%
   volume_death_ratio: 0.25      # 5m volume below 25% of its level at entry...
   volume_death_checks: 2        # ...on 2 checks in a row: the move died, exit
   unprofitable_hours: 0.15   # about 9 minutes: a trade that isn't in profit by then is sold, so the next one can come in
   max_hold_hours: 0.33   # about 20 minutes at most
-  min_first_rung_r: 1.0         # first take-profit must be at least 1.5x the stop distance
+  min_first_rung_r: 1.0         # first take-profit should be at least 1x the stop distance (not enforced in hot/turbo)
   round_trip_cost_pct: 3.0      # fees + slippage assumed for a full round trip
 
 risk:                           # hard limits; nothing overrides these
@@ -99,10 +99,10 @@ risk:                           # hard limits; nothing overrides these
   min_position_usd: 1
   max_position_usd: 20          # ...but never more than this
   max_open_positions: 15   # one a minute held about 10 minutes: up to 15 open
-  max_exposure_pct: 30          # all open coins together (was 25)
+  max_exposure_pct: 30          # all open coins together
   daily_loss_limit_pct: 40      # no new buys until 00:00 UTC (a trade a minute pays fees and slippage every time, so a low limit would stop it for the day)
   pause_after_losses: 200   # effectively off: pausing after a losing streak would break the one-a-minute pace
-  pause_hours: 1                # ...pauses new buys this long (was 12)
+  pause_hours: 1                # ...pauses new buys this long
   max_drawdown_pct: 70          # from the high: kill switch, sell everything, stop (fake money: this is the experiment's floor)
   max_consecutive_api_errors: 10
   min_sol_for_fees: 0.05
