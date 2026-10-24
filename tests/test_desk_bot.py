@@ -1272,3 +1272,67 @@ def test_hot_mode_keeps_every_risk_limit(tmp_path):
     w.pools = lambda kind: [{"mint": GOOD, "pool": "", "rank": 1}, {"mint": BAD, "pool": "", "rank": 2}] if kind == "trending_pools" else []
     d.sweep()
     assert len(d.journal.open_positions("paper")) == 1  # the second coin finds no room
+
+
+# ---------------------------------------------------------------- turbo: the pace gate and its config
+def pace_cfg(**hot):
+    cfg = _load_config("config/desk.yaml")
+    return dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, starve_after_seconds=60, **hot))
+
+
+def test_the_turbo_config_has_no_coin_checks_and_a_pace():
+    cfg = _load_config("config/turbo.yaml")
+    assert cfg.hot.enabled and cfg.hot.starve_after_seconds == 60 and not cfg.desk.enabled
+    assert not cfg.hot.require_authorities_revoked and not cfg.hot.use_candles
+    assert cfg.hot.max_market_cap_usd >= 1_000_000 and cfg.hot.starved_min_attention_signals == 0
+    assert cfg.plan.max_hold_hours < 0.5  # a trade is over in minutes, so a new one can come in
+    assert cfg.risk.max_open_positions * cfg.risk.position_pct >= cfg.risk.max_exposure_pct  # exposure, not the count, is the cap
+    assert cfg.risk.pause_after_losses >= 100  # a losing streak must not stop the one-a-minute pace
+    assert _load_config("config/desk.yaml").hot.starve_after_seconds == 0  # HOT stays as it was
+
+
+def test_a_minute_without_a_buy_loosens_the_gate_until_one_is_made(tmp_path):
+    d, w, clock = hot_world(tmp_path, cfg=pace_cfg(), price=3e-4)  # a $300K coin: outside the $20-50K band
+    d.sweep()
+    assert d.journal.open_positions("paper") == [] and not d.starved()
+    clock.t += 61
+    assert d.starved()
+    d.sweep()
+    (p,) = d.journal.open_positions("paper")
+    assert p["mint"] == GOOD
+    assert not d.starved()  # the buy reset the clock: the gate is strict again
+
+
+def test_the_pace_gate_is_off_in_plain_hot_mode(tmp_path):
+    d, w, clock = hot_world(tmp_path, price=3e-4)
+    clock.t += 3600
+    d.sweep()
+    assert d.journal.open_positions("paper") == [] and not d.starved()
+
+
+def test_the_pace_gate_loosens_only_the_numbers_not_the_exit_checks(tmp_path):
+    d, w, clock = hot_world(tmp_path, cfg=pace_cfg(), price=3e-4)
+    w.no_sell.add(GOOD)  # can't be sold back
+    clock.t += 61
+    d.sweep()
+    assert d.journal.open_positions("paper") == []
+
+
+def test_the_dashboard_reports_the_pace(tmp_path):
+    d, w, clock = hot_world(tmp_path, cfg=pace_cfg(), price=3e-5)
+    d.sweep()
+    s = d.dashboard_state()
+    assert s["pace"]["target"] == 1 and s["pace"]["lastHour"] == 1 and s["pace"]["last10m"] == 1 and s["pace"]["starved"] is False
+    clock.t += 700
+    assert d.dashboard_state()["pace"]["last10m"] == 0
+
+
+def test_turbo_buys_do_not_buzz_the_phone(tmp_path):
+    d, w, clock = hot_world(tmp_path, price=3e-5)
+    d.mode = "turbo"
+    sent = []
+    d._alert = sent.append
+    d.sweep()
+    assert d.journal.open_positions("turbo") and sent == []
+    d._feed("KILL", "CHIEF", "stop", alert=True)
+    assert sent

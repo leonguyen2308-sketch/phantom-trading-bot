@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, fields
 from pathlib import Path
 
@@ -135,6 +136,18 @@ class Hot:
     max_price_impact_pct: float
     max_round_trip_loss_pct: float
     max_slippage_tolerance_pct: float
+    starve_after_seconds: float  # 0 = off. Otherwise: no buy for this long and the gate loosens to the starved_* numbers until one is made
+    starved_min_market_cap_usd: float
+    starved_max_market_cap_usd: float
+    starved_min_liquidity_usd: float
+    starved_min_txns_1h: int
+    starved_min_attention_signals: int
+
+    def starved(self) -> "Hot":
+        """The same gate with the loosened numbers (everything else, the on-chain and quote checks included, stays)."""
+        return dataclasses.replace(self, min_market_cap_usd=self.starved_min_market_cap_usd, max_market_cap_usd=self.starved_max_market_cap_usd,
+                                   min_liquidity_usd=self.starved_min_liquidity_usd, min_txns_1h=self.starved_min_txns_1h,
+                                   min_attention_signals=self.starved_min_attention_signals)
 
 
 @dataclass(frozen=True)
@@ -171,8 +184,10 @@ def load_config(path: str | Path = "config/desk.yaml") -> DeskConfig:
                    plan=_build(PlanRules, plan, "plan"), risk=_build(Risk, d.get("risk") or {}, "risk"),
                    paper=_build(Paper, d.get("paper") or {}, "paper"), track=_build(Track, d.get("track") or {}, "track"),
                    hot=_build(Hot, d.get("hot") or {}, "hot"))
-    if c.hot.min_market_cap_usd > c.hot.max_market_cap_usd:
-        raise ValueError("hot.min_market_cap_usd is above hot.max_market_cap_usd")
+    if c.hot.min_market_cap_usd > c.hot.max_market_cap_usd or c.hot.starved_min_market_cap_usd > c.hot.starved_max_market_cap_usd:
+        raise ValueError("hot: a minimum market cap is above its maximum")
+    if c.hot.starve_after_seconds < 0:
+        raise ValueError("hot.starve_after_seconds can't be negative")
     if c.desk.when_unavailable not in ("skip", "rules_only"):
         raise ValueError("desk.when_unavailable must be skip or rules_only")
     if not 0 < c.risk.position_pct <= 20:

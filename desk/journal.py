@@ -167,6 +167,10 @@ class Journal:
         return self.db.execute("SELECT * FROM positions WHERE mode=? AND book=? AND closed_t IS NULL ORDER BY id", (mode, book)).fetchall()
 
     @_locked
+    def entries_since(self, mode: str, since: float) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM positions WHERE mode=? AND book='real' AND opened_t>=?", (mode, int(since))).fetchone()[0]
+
+    @_locked
     def closed_positions(self, mode: str, book: str = "real") -> list[sqlite3.Row]:
         return self.db.execute("SELECT * FROM positions WHERE mode=? AND book=? AND closed_t IS NOT NULL ORDER BY closed_t", (mode, book)).fetchall()
 

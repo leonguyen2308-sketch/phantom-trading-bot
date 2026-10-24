@@ -118,6 +118,12 @@ hot:                            # HOT MODE (paper): no strategy filters; buy coi
   max_price_impact_pct: 8       # the real quote for our ticket must still be sane on a small pool...
   max_round_trip_loss_pct: 20   # ...and selling it straight back must work (this is the honeypot check)
   max_slippage_tolerance_pct: 15
+  starve_after_seconds: 0       # 0 = off (HOT mode waits for a coin that fits). config/turbo.yaml sets 60: no buy for a minute, loosen the gate
+  starved_min_market_cap_usd: 5000        # the numbers the gate loosens to when it is starved (only used when starve_after_seconds > 0)
+  starved_max_market_cap_usd: 5000000
+  starved_min_liquidity_usd: 1500
+  starved_min_txns_1h: 8
+  starved_min_attention_signals: 0
 
 paper:
   slippage_bps: 150             # extra cost per side on paper, for the seconds a live order takes

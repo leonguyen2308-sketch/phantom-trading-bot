@@ -46,6 +46,7 @@ UNPRICED_SECONDS = 120  # no price from any source for this long: the coin is tr
 SHORT_READS = 3  # wallet reads in a row that must agree before the bot believes tokens left outside it
 RECONCILE_GRACE_SECONDS = 120  # a fresh buy can take this long to show in RPC balances
 ALERT_REPEAT_SECONDS = 300
+TURBO_ALERTS = {"KILL", "STOP", "WARN", "HALT"}  # turbo trades every minute: Telegram only hears about what needs you
 SEATS = ("SCOUT", "ANALYST", "NEWS", "SKEPTIC", "CHIEF")
 PENDING = object()  # _execute: sent, outcome unknown
 # how long a sighting on a list is remembered, per fact: a rank goes stale in minutes, "newly listed" stays true for the
@@ -124,6 +125,7 @@ class Desk:
         self.sol_now: float | None = None
         self.sweeps = 0
         self.last = {"sweep": -1e18, "price": -1e18, "volume": -1e18, "mark": -1e18}
+        self._last_buy_t = self.clock()  # when the last real buy filled (a minute's grace at start): the pace gate looks at this
         self.scan_state = "idle"
         self.latest: dict | None = journal.get(f"latest:{mode}")
         self._stop = threading.Event()
@@ -133,7 +135,7 @@ class Desk:
         with self.lock:
             self.journal.event(self.mode, self.clock(), kind, seat, text, pnl)
         log.info("[%s/%s] %s%s", seat, kind, text, f" ({pnl:+.2f})" if pnl is not None else "")
-        if alert:
+        if alert and (self.mode != "turbo" or kind in TURBO_ALERTS):  # a trade a minute is not worth a phone buzz each
             self._alert(f"{seat}: {text}" + (f"  {pnl:+.2f} USD" if pnl is not None else ""))
 
     def _alert(self, text: str) -> None:
@@ -352,12 +354,13 @@ class Desk:
             self.scan_state = "idle"
             return
         survivors = []
+        hot_gate = self._hot_gate(now)
         for m in mints:
             self._count("universe", m)
             jt, dx = universe.get(m), pairs.get(m)
             mf = {**market_fields(jt, dx, now), **self._attention(m, now)}
             if self.cfg.hot.enabled:  # hot mode: market-cap band + attention, nothing else
-                why = funnel.g1_hot(mf, (dx or {}).get("dexId", ""), self.cfg.hot)
+                why = funnel.g1_hot(mf, (dx or {}).get("dexId", ""), hot_gate)
             else:
                 why = funnel.g1_market(mf, (dx or {}).get("dexId", ""), jt, self.cfg.gates)
             if why:
@@ -379,6 +382,14 @@ class Desk:
                 break  # the rest wait for the next sweep, in priority order
             self.evaluate(m, "scout", jt, dx, mf)
         self.scan_state = "idle"
+
+    def starved(self, now: float | None = None) -> bool:
+        """Pace gate: hot.starve_after_seconds without a buy and the hot gate loosens (hot.starved_*) until one is made."""
+        after = self.cfg.hot.starve_after_seconds
+        return bool(self.cfg.hot.enabled and after > 0 and (now if now is not None else self.clock()) - self._last_buy_t >= after)
+
+    def _hot_gate(self, now: float):
+        return self.cfg.hot.starved() if self.starved(now) else self.cfg.hot
 
     @staticmethod
     def _rank(attn: dict, mint, field: str, rank: int) -> None:
@@ -714,6 +725,7 @@ class Desk:
                                        plan=plan.to_dict(), decision_id=info["did"], buy_ref=fill.ref, source_wallet=info["source_wallet"])
             self._priced(mint, fill_price)
             self.journal.count(self.mode, self.clock(), "filled")
+            self._last_buy_t = self.clock()
         self._feed("BUY", "CHIEF", f"${info['symbol']} · ${fill.usd:,.2f} at {fill_price:.6g} · stop {plan.stop:.6g} (-{plan.stop_pct:.0f}%) · "
                                    f"TP {', '.join(f'+{p:g}%' for p in self.cfg.plan.ladder_pct)}", alert=True)
 
@@ -1276,7 +1288,9 @@ class Desk:
             c["n"] += 1
             c["wins"] += int(d["pnl"] > 0)
         return {
-            "mode": mode, "hot": self.cfg.hot.enabled, "claude": self.cfg.desk.enabled, "now": now, "day": int((now - start_t) // 86400) + 1, "killed": self.kill.tripped, "killReason": self.kill.reason,
+            "mode": mode, "hot": self.cfg.hot.enabled, "claude": self.cfg.desk.enabled,
+            "pace": {"last10m": j.entries_since(mode, now - 600), "lastHour": j.entries_since(mode, now - 3600),
+                     "target": 60 / self.cfg.hot.starve_after_seconds if self.cfg.hot.starve_after_seconds else 0, "starved": self.starved(now)}, "now": now, "day": int((now - start_t) // 86400) + 1, "killed": self.kill.tripped, "killReason": self.kill.reason,
             "blocked": self._buys_blocked(), "scanState": self.scan_state,
             "balance": round(self.equity_now, 2), "start": round(start, 2), "pnl": round(self.equity_now - start, 2),
             "pnlPct": round((self.equity_now / start - 1) * 100, 1) if start else 0.0, "equity": curve,

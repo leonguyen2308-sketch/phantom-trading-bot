@@ -50,7 +50,7 @@ header .sub { font: 600 10.5px var(--font-data); letter-spacing: .12em; text-tra
 .right { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .pill { background: #111; color: var(--fg); border-radius: 999px; padding: 6px 12px; font-weight: 600; font-size: 11.5px; display: inline-flex; gap: 7px; align-items: center; }
 .pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
-.pill.demo .dot, .pill.scan .dot { background: var(--warn); } .pill.paper .dot { background: var(--blue); } .pill.off .dot { background: var(--bad); }
+.pill.demo .dot, .pill.scan .dot, .pill.turbo .dot { background: var(--warn); } .pill.paper .dot { background: var(--blue); } .pill.off .dot { background: var(--bad); }
 button.kill { font: 700 11.5px var(--font-data); background: #111; color: var(--bad); border: 2px solid var(--bad); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
 button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
 .banner { background: #111; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
@@ -203,12 +203,14 @@ function render(s) {
   $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + (s.mode === "demo" ? ". Restart the demo to clear it." : ". Everything is being sold; buying is stopped until ./desk.sh reset.");
   $("blockBanner").hidden = !s.blocked || s.killed;
   $("blockBanner").textContent = "No new buys: " + (s.blocked || "");
+  const pace = s.pace && s.pace.target ? ` · ${s.pace.lastHour} entries in the last hour (aim ${s.pace.target}+)${s.pace.starved ? " · gate loosened" : ""}` : "";
   $("sub").textContent = `day ${s.day} · ${money(s.balance)} bank · ` +
-    (s.hot ? "hot mode: coins people are watching, minimal filters" + (s.claude ? ", Claude reviews" : "") :
-     s.claude ? "code gates, Claude vetoes" : "code gates, rules only");
+    (s.mode === "turbo" ? "turbo: no coin checks, attention only" :
+     s.hot ? "hot mode: coins people are watching, minimal filters" + (s.claude ? ", Claude reviews" : "") :
+     s.claude ? "code gates, Claude vetoes" : "code gates, rules only") + pace;
   $("ai").textContent = s.claude ? `AI $${s.ai.spent.toFixed(2)} / $${s.ai.budget} · ${s.ai.model}` : "AI off";
   $("modeChip").className = "pill " + (s.killed ? "off" : s.mode);
-  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase() + (s.hot ? " · HOT" : "");
+  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase() + (s.hot && s.mode !== "turbo" ? " · HOT" : "");
   $("clock").textContent = hhmm(s.now) + " UTC";
   $("bal").textContent = money(s.balance);
   $("pnl").textContent = `${signed(s.pnl)} (${pct(s.pnlPct)})`;

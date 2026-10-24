@@ -20,6 +20,7 @@ from phantom.config import file_sha256, install_redaction, load_env
 
 STATE = Path("state")
 CONFIG = Path("config/desk.yaml")
+TURBO = Path("config/turbo.yaml")  # ./desk.sh turbo: its own rules, its own paper wallet, its own rows in the journal
 WALLETS = Path("config/desk_wallets.yaml")
 PAGE = Path(__file__).resolve().parent.parent / "dashboard" / "desk.html"
 log = logging.getLogger("desk")
@@ -99,10 +100,11 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
     from phantom.risk import KillSwitch
     from phantom.server import make_app, serve_in_background
 
-    cfg = load_config(CONFIG)
+    config_path = TURBO if mode == "turbo" else CONFIG
+    cfg = load_config(config_path)
     if mode == "demo":  # the made-up market has coins of every size: show the strict funnel and the desk, not the hot band
         cfg = dataclasses.replace(cfg, hot=dataclasses.replace(cfg.hot, enabled=False), desk=dataclasses.replace(cfg.desk, enabled=True))
-    cfg_hash = file_sha256(CONFIG)
+    cfg_hash = file_sha256(config_path)
     STATE.mkdir(exist_ok=True)
     tick = 1.0
     watcher, tracked = None, {}
@@ -142,7 +144,8 @@ def cmd_run(mode: str, port: int, speed: float = 1.0, seed: int | None = None) -
         else:
             from fomo.brokers import PaperBroker
             start = float(os.environ.get("DESK_PAPER_START_USD", "100"))
-            broker = PaperBroker(STATE / "desk_paper.json", os.environ["JUPITER_API_KEY"], start, cfg.paper.slippage_bps, http=src["bhttp"])
+            wallet_file = "desk_paper.json" if mode == "paper" else f"desk_{mode}_paper.json"  # turbo has its own fake money
+            broker = PaperBroker(STATE / wallet_file, os.environ["JUPITER_API_KEY"], start, cfg.paper.slippage_bps, http=src["bhttp"])
         if cfg.desk.enabled and os.environ.get("ANTHROPIC_API_KEY"):
             from desk.ai import ClaudeDesk
             brain = ClaudeDesk(cfg.desk, journal, mode=mode)
@@ -354,11 +357,11 @@ def cmd_golive_check() -> None:
 def cmd_kill(reset: bool) -> None:
     from desk.journal import Journal
     from phantom.risk import KillSwitch
-    switches = {m: KillSwitch(STATE / f"desk_{m}_kill.json") for m in ("paper", "live")}
+    switches = {m: KillSwitch(STATE / f"desk_{m}_kill.json") for m in ("paper", "live", "turbo")}
     if not reset:
         for ks in switches.values():
             ks.trip("Command line: ./desk.sh kill")
-        print("Kill switch ON (paper and live). The running desk sells everything and stops buying within seconds.")
+        print("Kill switch ON (paper, turbo and live). The running desk sells everything and stops buying within seconds.")
         return
     for m, ks in switches.items():
         print(f"{m}: kill switch is {'ON: ' + ks.reason if ks.tripped else 'off'}.")
@@ -367,7 +370,7 @@ def cmd_kill(reset: bool) -> None:
     for ks in [*switches.values(), *([old] if old.path.exists() else [])]:
         ks.reset(answer)
     j = Journal(STATE / "desk.sqlite")
-    for m in ("paper", "live"):  # fresh error counts and baselines, or the old ones re-trip it at once
+    for m in ("paper", "live", "turbo"):  # fresh error counts and baselines, or the old ones re-trip it at once
         j.put(f"api_errors:{m}", 0)
         j.put(f"reset_at:{m}", time.time())  # a running desk reads this and forgets its streaks too
         for k in ("peak", "day_start", "start"):  # after a withdrawal, the new balance is the baseline
@@ -383,14 +386,15 @@ def main() -> None:
     d.add_argument("--speed", type=float, default=60.0, help="simulated seconds per step x 0.2s (default 60: about 5 simulated minutes a second)")
     d.add_argument("--seed", type=int, default=None)
     d.add_argument("--port", type=int, default=8002)
-    for m in ("paper", "live"):
-        sp = sub.add_parser(m, help=f"run on the real market with {'fake' if m == 'paper' else 'REAL'} money")
-        sp.add_argument("--port", type=int, default=8002)
+    for m in ("paper", "live", "turbo"):
+        sp = sub.add_parser(m, help={"paper": "run on the real market with fake money", "live": "run on the real market with REAL money",
+                                     "turbo": "fake money, no coin checks, a coin about every minute (config/turbo.yaml)"}[m])
+        sp.add_argument("--port", type=int, default=8003 if m == "turbo" else 8002)
     sub.add_parser("scan", help="one sweep of the real market, no trading, no AI: see the funnel")
     sub.add_parser("desk-test", help="one real Claude review of a made-up token: checks the key and the cost")
     sub.add_parser("wallet-check", help="check the bot wallet and a Jupiter quote (sends nothing)")
     st = sub.add_parser("stats", help="desk vs rules-only results so far")
-    st.add_argument("--mode", default="paper", choices=["paper", "live"])
+    st.add_argument("--mode", default="paper", choices=["paper", "live", "turbo"])
     sub.add_parser("approve", help="review and lock config/desk.yaml")
     sub.add_parser("ack-risks", help="read and accept what could blow up the account")
     sub.add_parser("golive-check", help="every check before real money")
@@ -400,7 +404,7 @@ def main() -> None:
     setup_logging()
     if a.cmd == "demo":
         cmd_run("demo", a.port, a.speed, a.seed)
-    elif a.cmd in ("paper", "live"):
+    elif a.cmd in ("paper", "live", "turbo"):
         cmd_run(a.cmd, a.port)
     elif a.cmd == "scan":
         cmd_scan()

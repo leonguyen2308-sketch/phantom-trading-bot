@@ -1,0 +1,140 @@
+# TURBO (paper only): a coin entered about every minute, no coin-quality checks, only "lots of people are looking at it".
+# Run it with ./desk.sh turbo (dashboard http://localhost:8003). It has its own fake money, its own journal rows and its
+# own kill switch, so it never touches the HOT/strict paper run in config/desk.yaml. It can never trade real money.
+#
+# What is NOT checked: holders, RugCheck, volume quality, price run-up, momentum, authorities, the chart.
+# What still is: a market cap and a pool in range, some trading, and a real quote to buy AND to sell it straight back
+# (without that a paper position could never be closed, and the results would be fiction), plus the risk limits.
+# If a minute passes without a buy the gate loosens (hot.starved_*) until one is made, so it keeps entering.
+
+scan:
+  interval_seconds: 10   # sweep every 10 s
+  organic_every: 5              # also pull Jupiter's top-organic list every N sweeps
+  dexscreener_every: 2          # and DexScreener's new profiles/boosts every N sweeps
+  max_universe: 800             # cap on tokens looked at per sweep
+  deep_checks_per_sweep: 25   # most a sweep may look at closely (time and Jupiter's 1 request/second are the real limit)
+  recheck_killed_minutes: 360   # a token killed on facts (authority, holders, rug) is not re-checked for this long
+  recheck_passed_minutes: 3   # a coin looked at is looked at again after 3 minutes
+  extra_jupiter_lists: [toptrending/1h, toptraded/1h, toporganicscore/5m]   # more ways to find coins people are trading
+  extra_lists_every: 2          # pull those every 2nd sweep (Jupiter's free key is about 1 request a second)
+  gecko_discovery_every: 2      # GeckoTerminal's Solana trending and newest pools every 2nd sweep (about a minute); 0 = off
+
+gates:                          # G1: cheap numbers already in hand (Jupiter + DexScreener batches)
+  min_age_minutes: 20           # skip the first minutes after the pool opens (insiders' and snipers' zone)
+  max_age_hours: 72
+  min_liquidity_usd: 12000      # graduated tokens with a real pool only; bonding-curve coins are skipped (was 25000: wider net)
+  min_market_cap_usd: 70000     # was 150000: wider net, smaller coins reach the desk (riskier: Claude still vetoes)
+  max_market_cap_usd: 30000000
+  min_txns_1h: 60               # was 200: easier to pass (paper experiment)
+  min_buy_sell_ratio_1h: 0.7    # buys / sells over the last hour (was 0.9)
+  max_price_change_1h_pct: 30   # skip a coin that rose more than this in the last hour (was 120)
+  min_price_change_1h_pct: -25  # nor one that is dumping
+  min_organic_score: 15         # Jupiter's 0-100 organic-activity score (when present) (was 30)
+  max_jupiter_top_holders_pct: 60   # was 45
+  max_dev_balance_pct: 20           # was 10
+  min_vol_to_mcap_1h: 0.02       # an hour's volume vs market cap: too low = nobody trading it... (was 0.05)
+  max_vol_to_mcap_1h: 3.0        # ...too high = likely wash trading
+
+holders:                        # G2: on-chain facts (RPC), only for G1 survivors
+  require_mint_authority_revoked: true
+  require_freeze_authority_revoked: true
+  blocked_token2022_extensions: [transferHook, permanentDelegate, nonTransferable, transferFeeConfig, defaultAccountState, pausableConfig]
+  max_top1_pct: 12              # largest real wallet (pools and burns excluded) (was 8)
+  max_top10_pct: 45             # was 30
+  fresh_wallet_hours: 48        # a holder whose whole wallet history is younger than this is "fresh"
+  max_fresh_share_pct: 20       # share of supply held by fresh wallets among the top 10 (was 10)
+  max_rugcheck_risk: 75         # RugCheck normalised score (higher = riskier) (was 60); unavailable = unknown, not pass
+
+depth:                          # G3: a real Jupiter quote for our ticket, and selling it straight back
+  max_price_impact_pct: 3
+  max_round_trip_loss_pct: 12   # higher means a hidden tax or a thin pool (was 8)
+  max_slippage_tolerance_pct: 3 # Jupiter's worst-case fill vs its quote; wide tolerance invites sandwich bots
+  max_requote_move_pct: 20   # skip only if the price ran 20% while the buy was being prepared
+
+window:                         # G4: where the coin is in its move (5-minute candles, finalists only)
+  max_drop_from_high_pct: 35    # fading: price already this far below its recent high (was 25)
+  max_return_30m_pct: 100       # parabolic: up this much in 30 minutes (was 60)
+  min_candles: 6                # was 8
+
+desk:                           # the Claude seats (ANALYST, NEWS, SKEPTIC); code is the CHIEF
+  enabled: false   # Claude OFF: no checks, and a review per entry would cost more than the trades are worth
+                                # skip it ("unclear", or a block) or shrink it. false = the bot buys on the code gates alone.
+  model: claude-sonnet-5-5      # claude-opus-5-5 is stronger and about twice the price; claude-haiku-5-5 is the cheapest
+  effort_analyst: low
+  effort_skeptic: medium
+  news: false                   # web search per finalist: better red-flag checks, costs more
+  max_tokens: 8000
+  daily_budget_usd: 1.5         # the desk stops (and the bot skips trades) after this much AI spend a day, per mode
+                                # (a paper run alongside live has its own; ./desk.sh desk-test counts as paper)
+  max_reviews_per_hour: 15      # was 8: the wider net sends more coins to the desk (the daily budget is the real cap)
+  # Experiment (paper): the desk skips a coin only when the analyst calls it "unclear" (and the code gates above skip
+  # one that rose over 30% in the hour). Every other pattern may be bought, at the skeptic's size. The strict rules
+  # were min_conviction 0.6, setups [organic_trend, early_breakout], windows [early, running].
+  min_conviction: 0.0
+  allowed_setups: [organic_trend, early_breakout, late_chase, single_driver, wash_or_bot, fading]
+  allowed_windows: [early, running, late, exhausted]
+  when_unavailable: rules_only  # skip | rules_only  (rules_only = trade on the gates alone when the desk is off or down; in hot mode
+                                # also when it is over its hourly review cap, so the cap never stops a buy)
+  price_in_per_mtok: 2.0        # check https://platform.claude.com pricing for the model you pick
+  price_out_per_mtok: 10.0
+  web_search_usd_per_call: 0.01
+
+plan:                           # the exit plan, written before entry (TP-first)
+  stop_atr_mult: 3.0
+  min_stop_pct: 10
+  max_stop_pct: 20
+  ladder_pct: [15, 40]   # quick take-profits: a share at +15% and +40%
+  ladder_fraction: 0.33         # share of the original position sold at each take-profit
+  trail_pct: 12                 # after the first take-profit: sell the rest if price falls 30% from its peak
+  book_pct: 100   # sell everything left at +100%
+  volume_death_ratio: 0.25      # 5m volume below 25% of its level at entry...
+  volume_death_checks: 2        # ...on 2 checks in a row: the move died, exit
+  unprofitable_hours: 0.15   # about 9 minutes: a trade that isn't in profit by then is sold, so the next one can come in
+  max_hold_hours: 0.33   # about 20 minutes at most
+  min_first_rung_r: 1.0         # first take-profit must be at least 1.5x the stop distance
+  round_trip_cost_pct: 3.0      # fees + slippage assumed for a full round trip
+
+risk:                           # hard limits; nothing overrides these
+  position_pct: 2   # each buy: 2% of equity ($2 of $100)
+  min_position_usd: 1
+  max_position_usd: 20          # ...but never more than this
+  max_open_positions: 15   # one a minute held about 10 minutes: up to 15 open
+  max_exposure_pct: 30          # all open coins together (was 25)
+  daily_loss_limit_pct: 40      # no new buys until 00:00 UTC (a trade a minute pays fees and slippage every time, so a low limit would stop it for the day)
+  pause_after_losses: 200   # effectively off: pausing after a losing streak would break the one-a-minute pace
+  pause_hours: 1                # ...pauses new buys this long (was 12)
+  max_drawdown_pct: 70          # from the high: kill switch, sell everything, stop (fake money: this is the experiment's floor)
+  max_consecutive_api_errors: 10
+  min_sol_for_fees: 0.05
+
+hot:                            # HOT MODE (paper): no strategy filters; buy coins people are looking at, in a market-cap band.
+  enabled: true                 # false = the strict funnel (gates, holders, RugCheck, window) with or without Claude
+  min_market_cap_usd: 8000
+  max_market_cap_usd: 1000000   # any size from a fresh launch to a coin with a $1M market cap
+  min_liquidity_usd: 2000       # enough pool to trade a few dollars
+  min_age_minutes: 1            # the very first minutes are bots and insiders
+  max_age_hours: 72
+  min_txns_1h: 20               # some real trading: a promoted coin nobody trades is not hot
+  min_attention_signals: 1      # of: GeckoTerminal trending, Jupiter trending, newly listed, boosted, very active
+  jupiter_rank_limit: 100        # a place in Jupiter's top 50 trending counts
+  active_vol_to_mcap_1h: 0.5    # "very active": the hour's volume is at least the market cap
+  allow_bonding_curve: true     # pump.fun coins still on their curve: that is where 20-50K market caps live
+  use_candles: false            # false = size the stop from the 5m/1h price moves (no chart call, so no ~3 s wait per coin)
+  require_authorities_revoked: false   # TURBO does not check who can mint or freeze (paper only)
+  max_price_impact_pct: 15       # the real quote for our ticket must still be sane on a small pool...
+  max_round_trip_loss_pct: 30   # ...and selling it straight back must work (this is the honeypot check)
+  max_slippage_tolerance_pct: 25
+  starve_after_seconds: 60   # a minute without a buy: loosen the gate until one is made
+  starved_min_market_cap_usd: 3000   # starved: ...any coin from $3K...
+  starved_max_market_cap_usd: 10000000   # ...to $10M
+  starved_min_liquidity_usd: 1000
+  starved_min_txns_1h: 5
+  starved_min_attention_signals: 0   # starved: attention is not required, the most active coin wins
+
+paper:
+  slippage_bps: 150             # extra cost per side on paper, for the seconds a live order takes
+
+track:                          # optional TRACK station: wallets whose buys become candidates (never blind copies)
+  enabled: false
+  max_signal_age_seconds: 90
+  exit_when_wallet_sells: true  # if the tracked wallet sells most of its bag, exit too
