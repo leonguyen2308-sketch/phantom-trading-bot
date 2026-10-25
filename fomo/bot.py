@@ -6,6 +6,10 @@ Every second: new trades by the trader we copy (and by anyone whose copy we stil
 Every 15 seconds: prices, stop-loss / take-profit / max-hold, equity, the hard limits.
 When a copy closes, its P&L goes to the trader's record; N losses in a row fires them and the next
 trader on the weekly top takes over.
+
+The Grok bot (config/grok.yaml) adds: a daily copy window (22:00-08:00 in the video), two traders copied at once,
+the video's notifications, and xAI's Grok, which orders the bench and reads X about each coin we copy. Grok runs on
+a worker thread: a copy never waits for it, and it can only change who is copied next or make us sell sooner.
 """
 
 from __future__ import annotations
@@ -14,11 +18,12 @@ import logging
 import re
 import time
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
 
 from fomo.brokers import Fill, Quote
-from fomo.config import FomoConfig
+from fomo.config import FomoConfig, window_bounds
 from fomo.journal import Journal
 from fomo.leaderboard import Trader
 from fomo.rules import Rotation
@@ -36,15 +41,17 @@ ALERT_REPEAT_SECONDS = 300
 CROWD_ALERTS = {"KILL", "STOP", "WARN"}  # copying hundreds of traders: Telegram only hears about what needs you
 TOKEN_VETO_SECONDS = 300  # a coin refused for what it is (authorities, pool size) is not looked up again for this long
 DEX_CACHE_SECONDS = 15  # one coin bought by several traders is read from DexScreener once
+GROK_NOTE_SECONDS = 600  # "Grok unavailable" is said at most this often
 
 
 class CopyBot:
     def __init__(self, *, mode: str, cfg: FomoConfig, broker, watcher, prices, dex, mint_info: Callable,
-                 lineup: Callable[[], list[Trader]], journal: Journal, kill: KillSwitch, alerts=None, clock=time.time):
+                 lineup: Callable[[], list[Trader]], journal: Journal, kill: KillSwitch, alerts=None, clock=time.time, grok=None,
+                 pool=None):
         self.mode, self.cfg, self.broker, self.watcher, self.prices, self.dex = mode, cfg, broker, watcher, prices, dex
         self.mint_info, self.lineup_source, self.journal, self.kill, self.alerts, self.clock = mint_info, lineup, journal, kill, alerts, clock
         self.rot = Rotation(cfg.copy.fire_after_losses, cfg.copy.fire_cooldown_days * 86400, journal.get(f"rotation:{mode}"),
-                            follow_all=cfg.copy.follow_all)
+                            follow_all=cfg.copy.follow_all, follow_count=cfg.copy.follow_count)
         self.errors: dict[str, int] = {"general": int(journal.get(f"api_errors:{mode}", 0))}  # failing 15-second windows in a row, per source
         self._error_window: dict[str, float] = {}
         self.equity_now = float(journal.get(f"equity:{mode}", 0.0))
@@ -62,6 +69,15 @@ class CopyBot:
         self._copies: deque[float] = deque()  # when each copy was made (last hour)
         self._token_veto: dict[str, tuple[float, str]] = {}
         self._dex_cache: dict[str, tuple[float, object]] = {}
+        self._exit_lag: dict[int, float] = {}  # copy id -> seconds between the trader's sell and ours
+        self.grok = grok if grok is not None and cfg.grok.enabled else None
+        self._jobs: list[tuple[str, object, dict, float]] = []  # (kind, future, context, started)
+        self._pool = pool or (ThreadPoolExecutor(max_workers=2, thread_name_prefix="grok") if self.grok else None)
+        self._pending_lineup: list[Trader] | None = None
+        self._grok_note_at: dict[str, float] = {}
+        if self.grok:
+            day = datetime.fromtimestamp(self.clock(), timezone.utc).strftime("%Y-%m-%d")
+            self.grok.restore(day, float(journal.get(f"grok_spend:{mode}:{day}", 0.0) or 0.0))
 
     # ------------------------------------------------------------ helpers
     def _save_rotation(self) -> None:
@@ -120,6 +136,8 @@ class CopyBot:
 
     # ------------------------------------------------------------ the weekly top
     def refresh_lineup(self, force: bool = False) -> None:
+        if self._pending_lineup is not None:
+            return  # Grok is still putting the last one in order
         now = self.clock()
         due = now - float(self.journal.get(f"lineup_at:{self.mode}", 0)) >= self.cfg.copy.refresh_hours * 3600
         if not (force or due or not self.rot.s["lineup"]) or (not force and now < self._lineup_retry_at):
@@ -134,11 +152,163 @@ class CopyBot:
         if not traders:
             self._alert("The top list is empty: set SOLANATRACKER_API_KEY or FOMOAPI_KEY in .env, or put wallets in config/wallets.txt.")
             return
-        before = self.rot.s["following"]
-        for e in self.rot.set_lineup(traders[: self.cfg.copy.lineup_size], now):
-            self._feed("SCAN" if "loaded" in e else "PICK", e, alert=self.rot.s["following"] != before)
+        traders = traders[: self.cfg.copy.lineup_size]
         self.journal.put(f"lineup_at:{self.mode}", now)
+        if self._wants_picks():
+            self._pending_lineup = traders  # set once Grok has put it in order (or failed), a few seconds from now
+            self._ask_picks(traders)
+            return
+        self._set_lineup(traders)
+
+    def _set_lineup(self, traders: list[Trader]) -> None:
+        before = self.rot.s["following"]
+        for e in self.rot.set_lineup(traders, self.clock()):
+            self._feed("SCAN" if "loaded" in e else "PICK", e, alert=self.rot.s["following"] != before)
         self._save_rotation()
+
+    # ------------------------------------------------------------ Grok (on a worker thread; results applied here)
+    def _wants_picks(self) -> bool:
+        return bool(self.grok and self.cfg.grok.pick_traders and not self.cfg.copy.follow_all and self.grok.available()[0])
+
+    def _submit(self, kind: str, fn, *args, context: dict | None = None) -> None:
+        self._jobs.append((kind, self._pool.submit(fn, *args), context or {}, self.clock()))
+
+    def _ask_picks(self, traders: list[Trader]) -> None:
+        now = self.clock()
+        cands = []
+        for t in [t for t in traders if not self.rot.is_fired(t.wallet, now)][: self.cfg.grok.pick_from]:
+            st = self.rot.stats(t.wallet)
+            cands.append({"wallet": t.wallet, "rank": t.rank, "pnl_7d": t.pnl_7d, "win_rate": t.win_rate, "copies": st["trades"],
+                          "wins": st["wins"], "pnl_with_us": st["pnl"], "streak": st["streak"], "last": st["last"]})
+        if cands:
+            self._submit("picks", self.grok.rank_traders, cands, self.cfg.copy.follow_count)
+        elif self._pending_lineup is not None:
+            self._set_lineup(self._pending_lineup)
+            self._pending_lineup = None
+
+    def _grok_note(self, kind: str, text: str) -> None:
+        if self.clock() - self._grok_note_at.get(kind, -1e18) >= GROK_NOTE_SECONDS:
+            self._grok_note_at[kind] = self.clock()
+            self._feed("GROK", text)
+
+    def _run_jobs(self) -> None:
+        from fomo.grok import GrokUnavailable
+        now, keep = self.clock(), []
+        for kind, fut, ctx, started in self._jobs:
+            if not fut.done():
+                if kind == "picks" and self._pending_lineup is not None and now - started > self.cfg.grok.timeout_seconds + 30:
+                    self._grok_note("picks", "Grok took too long to order the traders: copying in leaderboard order")
+                    self._set_lineup(self._pending_lineup)
+                    self._pending_lineup = None
+                keep.append((kind, fut, ctx, started))
+                continue
+            try:
+                result = fut.result()
+            except GrokUnavailable as e:
+                result = None
+                self._grok_note(kind, f"Grok unavailable ({e}): " + ("copying in leaderboard order" if kind == "picks" else "no X check"))
+            except Exception as e:  # never let a Grok problem stop copying
+                result = None
+                log.warning("Grok %s failed: %s: %s", kind, type(e).__name__, e)
+                self._grok_note(kind, f"Grok {kind} failed ({type(e).__name__}): carrying on without it")
+            if kind == "picks":
+                self._apply_picks(result)
+            elif kind == "xcheck" and result:
+                self._apply_xcheck(ctx, result)
+        self._jobs = keep
+        if self.grok:
+            day = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+            spent = self.grok.spent_today()
+            if spent:
+                self.journal.put(f"grok_spend:{self.mode}:{day}", spent)
+
+    def _apply_picks(self, result) -> None:
+        now = self.clock()
+        if result:
+            order, reasons = result
+            self.rot.s["order"] = list(order)
+            top = [w for w in order if not self.rot.is_fired(w, now)][: max(self.cfg.copy.follow_count, 3)]
+            known = {t.wallet: t for t in (self._pending_lineup or [])}
+            names = []
+            for w in top:
+                t = self._trader(w) or known.get(w)
+                names.append(f"@{t.handle if t else w[:6]} (#{t.rank if t else '?'}): {reasons.get(w, '')}".rstrip(": "))
+            self._feed("GROK", "Grok ordered the weekly top · " + " · ".join(names)[:600])
+        if self._pending_lineup is not None:
+            self._set_lineup(self._pending_lineup)
+            self._pending_lineup = None
+        elif result:
+            for e in self.rot.set_order(self.rot.s["order"], now):
+                self._feed("PICK", e)
+            self._save_rotation()
+
+    def _apply_xcheck(self, ctx: dict, result: dict) -> None:
+        verdict, why = result.get("verdict"), "; ".join(result.get("reasons") or []) or "no details"
+        held = next((c for c in self.journal.open_copies(self.mode) if c["mint"] == ctx["mint"]), None)
+        if verdict == "rug" and held:
+            self._feed("GROK", f"Grok read X: ${ctx['symbol']} looks like a rug ({why}) · selling now", alert=True)
+            self.sell(held, 1.0, "Grok: X says rug")
+        elif verdict == "warn":
+            self._feed("GROK", f"Grok read X: a warning about ${ctx['symbol']} ({why}) · keeping it, the stop loss still applies")
+        elif verdict == "ok":
+            log.info("Grok X check: $%s ok", ctx["symbol"])
+
+    # ------------------------------------------------------------ the copy window
+    def in_window(self, now: float | None = None) -> bool:
+        w = self.cfg.copy.window
+        if not w:
+            return True
+        start, end = self.window_bounds(now if now is not None else self.clock())
+        return start <= (now if now is not None else self.clock()) < end
+
+    def window_bounds(self, now: float) -> tuple[float, float]:
+        """(open, close) of the window we are in, or else of the next one."""
+        return window_bounds(self.cfg.copy.window, self.cfg.copy.window_timezone, now)
+
+    def _window_tick(self, now: float) -> None:
+        if not self.cfg.copy.window or not self.equity_now:
+            return
+        st = self.journal.get(f"window:{self.mode}") or {}
+        open_now = self.in_window(now)
+        label = self.cfg.copy.window.replace("-", " → ")
+        if open_now and not st.get("open") and self._pending_lineup is None:  # once Grok has said who we follow
+            start, end = self.window_bounds(now)
+            self.journal.put(f"window:{self.mode}", {"open": True, "opened_t": now, "start": start, "end": end,
+                                                     "start_equity": self.equity_now})
+            who = " and ".join(f"@{t.handle} (#{t.rank})" for t in self.rot.follows) or "nobody yet"
+            self._feed("WINDOW", f"Copy window open · {label} · following {who} · risk cap "
+                                 f"{self.cfg.limits.max_position_pct:.0%} per trade · keep the Mac on charge", alert=True)
+        elif not open_now and st.get("open"):
+            closed = [c for c in self.journal.closed_copies(self.mode) if (c["closed_t"] or 0) >= st["opened_t"]]
+            wins = sum(1 for c in closed if (c["pnl"] or 0) > 0)
+            start_eq, eq = float(st.get("start_equity") or self.equity_now), self.equity_now
+            rate = f" · {wins / len(closed):.0%} win rate" if closed else ""
+            self._feed("WINDOW", f"Copy window closed · ${start_eq:,.2f} → ${eq:,.2f} · {eq / start_eq:.1f}x · "
+                                 f"{wins}W {len(closed) - wins}L{rate}", eq - start_eq, alert=True)
+            self.journal.put(f"window:{self.mode}", {**st, "open": False, "closed_t": now, "end_equity": eq, "wins": wins,
+                                                     "losses": len(closed) - wins})
+            if self.cfg.copy.close_at_window_end:
+                for c in self.journal.open_copies(self.mode):
+                    self.sell(c, 1.0, "copy window closed")
+
+    def _digest_tick(self, now: float) -> None:
+        mins = self.cfg.notify.digest_minutes
+        if not mins:
+            return
+        last = float(self.journal.get(f"digest_at:{self.mode}") or 0)
+        if not last:
+            self.journal.put(f"digest_at:{self.mode}", now)
+            return
+        if now - last < mins * 60:
+            return
+        self.journal.put(f"digest_at:{self.mode}", now)
+        done = [c for c in self.journal.closed_copies(self.mode) if (c["closed_t"] or 0) > last]
+        if not done:
+            return
+        wins = sum(1 for c in done if (c["pnl"] or 0) > 0)
+        parts = " · ".join(f"${c['symbol']} {'+' if (c['pnl'] or 0) >= 0 else '-'}${abs(c['pnl'] or 0):,.2f}" for c in done[-6:])
+        self._feed("DIGEST", f"Copied {len(done)} trade{'s' if len(done) > 1 else ''} · {wins}W {len(done) - wins}L · {parts}",
+                   round(sum(c["pnl"] or 0 for c in done), 2), alert=True)
 
     def holder_wallets(self) -> set[str]:
         """Traders whose trades we must not miss: we hold a coin they bought, and copy their exit."""
@@ -157,12 +327,15 @@ class CopyBot:
     def _copying(self, wallet: str) -> bool:
         """Do we copy this wallet's buys right now?"""
         if not self.cfg.copy.follow_all:
-            return wallet == self.rot.s["following"]
+            return wallet in self.rot.s["follows"]
         return self._trader(wallet) is not None and not self.rot.is_fired(wallet, self.clock())
 
     # ------------------------------------------------------------ one step
     def step(self) -> None:
+        if self._jobs:
+            self._run_jobs()
         self.refresh_lineup()
+        self._window_tick(self.clock())  # before this step's trades: "window open" comes before its first copy
         try:
             if hasattr(self.watcher, "priority"):
                 self.watcher.priority = self.holder_wallets()
@@ -181,6 +354,8 @@ class CopyBot:
         if self.clock() - self._last_mark >= MARK_SECONDS:
             self._last_mark = self.clock()
             self.mark()
+            self._window_tick(self.clock())
+            self._digest_tick(self.clock())
         self._api_ok("general")  # the whole step ran: a streak of loop crashes is broken
 
     def on_trade(self, sw) -> None:
@@ -198,6 +373,8 @@ class CopyBot:
             if c["trader"] == sw.wallet and c["mint"] == sw.mint:
                 handle = c["handle"]
                 self._feed("SIG", f"@{handle} sold {sw.sold_fraction:.0%} of ${c['symbol']}")
+                if sw.t:
+                    self._exit_lag[c["id"]] = max(0.0, now - sw.t)
                 self.sell(c, sw.sold_fraction, "trader sold")
 
     # ------------------------------------------------------------ buying
@@ -206,7 +383,7 @@ class CopyBot:
         text = f"@{t.handle if t else sw.wallet[:6]} bought ${symbol} · not copied: {why}"
         self._tally(re.sub(r"[$\d][\d,.]*[%KMBkmbs]*", "N", why))
         now = self.clock()
-        if self.cfg.copy.follow_all:
+        if self.cfg.copy.follow_all or self.cfg.copy.follow_count > 1:
             quiet = now - self._last_skip[1] < 20  # hundreds of traders: the feed shows a skip every 20 s, the tally counts them all
         else:
             quiet = why == self._last_skip[0] and now - self._last_skip[1] < 600
@@ -230,6 +407,10 @@ class CopyBot:
         cfg, lim, now = self.cfg, self.cfg.limits, self.clock()
         trader = self._trader(sw.wallet)
         symbol = sw.mint[:4]
+        if not self.in_window(now):  # outside the copy window: not even a SKIP line, only the count
+            self._tally("outside the copy window")
+            log.info("@%s bought %s outside the copy window: not copied", trader.handle if trader else sw.wallet[:6], sw.mint[:6])
+            return
         if self.kill.tripped:
             return self._skip(sw, symbol, "kill switch is on")
         if sw.t and now - sw.t > cfg.copy.max_signal_age_seconds:
@@ -240,7 +421,7 @@ class CopyBot:
         holding = next((c for c in opens if c["mint"] == sw.mint), None)
         if holding is None and len(opens) >= lim.max_open_positions:
             return self._skip(sw, symbol, f"already {len(opens)} open copies")
-        if holding is not None and holding["trader"] != sw.wallet and cfg.copy.follow_all:
+        if holding is not None and holding["trader"] != sw.wallet and (cfg.copy.follow_all or cfg.copy.follow_count > 1):
             return self._skip(sw, symbol, "already copied another trader into it")
         if cfg.copy.only_first_buy and sw.pre_raw > 0:
             return self._skip(sw, symbol, "trader is adding to a token they already held")
@@ -317,7 +498,12 @@ class CopyBot:
         self._copies.append(now)
         while self._copies and self._copies[0] < now - 3600:
             self._copies.popleft()
-        self._feed("COPY", f"@{trader.handle if trader else '?'} bought ${symbol} · copy {cfg.copy.copy_ratio:g}x · ${fill.usd:,.2f}", alert=True)
+        rank = f" · weekly top #{trader.rank}" if trader else ""
+        capped = " · inside the risk cap" if fill.usd < sw.usd * cfg.copy.copy_ratio - 0.01 else ""
+        self._feed("COPY", f"@{trader.handle if trader else '?'} bought ${symbol} · ${sw.usd:,.0f} in · copy {cfg.copy.copy_ratio:g}x · "
+                           f"mirrored with ${fill.usd:,.2f}{capped}{rank}", alert=True)
+        if self.grok and cfg.grok.x_check and fill.usd >= cfg.grok.x_check_min_usd and self.grok.available()[0]:
+            self._submit("xcheck", self.grok.check_token, sw.mint, context={"mint": sw.mint, "symbol": symbol})
 
     def _execute(self, q: Quote) -> Fill | None:
         """Send it. On an unknown outcome, read the wallet to learn what really happened."""
@@ -402,10 +588,31 @@ class CopyBot:
             return True
         pnl = sold_usd - c["cost_usd"]
         self.journal.update_copy(c["id"], **upd, closed_t=int(now), pnl=pnl, reason=reason)
-        self._feed("EXIT", f"@{c['handle']} ${c['symbol']} · {reason} · we exit", pnl, alert=True)
+        pct = pnl / c["cost_usd"] * 100 if c["cost_usd"] else 0.0
+        lag = self._exit_lag.pop(c["id"], None)
+        held = f"held {max(0, (now - c['opened_t']) / 60):.0f}m"
+        t = self._trader(c["trader"])
+        if pct >= self.cfg.notify.big_win_pct:
+            src = f"copied from weekly top #{t.rank} · @{c['handle']}" if t else f"copied from @{c['handle']}"
+            after = f" · exit {lag:.1f}s after the trader sold" if lag is not None else f" · {reason}"
+            self._feed("BIG", f"Big win · sold ${c['symbol']} · +${pnl:,.2f} (+{pct:.0f}%) · {src}{after} · {held}", pnl, alert=True)
+        else:
+            self._feed("EXIT", f"@{c['handle']} ${c['symbol']} · {reason} · we exit ({pct:+.0f}%, {held})", pnl,
+                       alert=not self.cfg.notify.digest_minutes)
+        before = set(self.rot.s["follows"])
         fired, events = self.rot.record(c["trader"], pnl, now)
+        switching = self.grok is not None or self.cfg.copy.follow_count > 1
         for e in events:
-            self._feed("FIRE" if "fired" in e else "PICK", e, alert=True)
+            self._feed("FIRE" if "fired" in e else "PICK", e, alert=not switching)
+        if fired and switching and c["trader"] in before:
+            new = [x for x in self.rot.follows if x.wallet not in before]
+            now_copying = ", ".join(f"weekly top #{x.rank} @{x.handle}" + (f" · {x.win_rate:.0%} win rate" if x.win_rate is not None else "")
+                                    for x in new) or "nobody new (everyone on the list is fired)"
+            who = "Grok switched trader" if self.grok else "Switched trader"
+            self._feed("SWITCH", f"{who} · @{c['handle']} took {self.cfg.copy.fire_after_losses} losses in a row · now copying {now_copying}",
+                       alert=True)
+            if self._wants_picks():  # the records changed: let Grok re-order the bench for the next switch
+                self._ask_picks(self.rot.lineup)
         self._save_rotation()
         if fired and not self.rot.active(now):
             self._alert("Every trader on the weekly top is fired. Copying stops until the list refreshes.")
@@ -543,6 +750,26 @@ class CopyBot:
                               "ageMin": int((now - c["opened_t"]) / 60)})
         closed = self.journal.closed_copies(self.mode)
         results = {"n": len(closed), "wins": sum(1 for c in closed if (c["pnl"] or 0) > 0), "pnl": round(sum(c["pnl"] or 0 for c in closed), 2)}
+        window = None
+        if self.cfg.copy.window:
+            wst = self.journal.get(f"window:{self.mode}") or {}
+            is_open = self.in_window(now)
+            start, end = self.window_bounds(now)
+            since = start if is_open else wst.get("opened_t", start)
+            done = [c for c in closed if (c["closed_t"] or 0) >= since]
+            window = {"label": self.cfg.copy.window.replace("-", " → "), "open": is_open, "start": start, "end": end,
+                      "startEquity": wst.get("start_equity"), "endEquity": None if is_open else wst.get("end_equity"),
+                      "wins": sum(1 for c in done if (c["pnl"] or 0) > 0),
+                      "losses": sum(1 for c in done if (c["pnl"] or 0) <= 0),
+                      "copies": [c["opened_t"] for c in [*closed, *self.journal.open_copies(self.mode)] if c["opened_t"] >= since]}
+        follows = []
+        for t in self.rot.follows if not crowd else []:
+            s = self.rot.stats(t.wallet)
+            follows.append({"handle": t.handle, "wallet": t.wallet, "rank": t.rank, "winRate": t.win_rate, "pnl7d": t.pnl_7d,
+                            "us": round(s["pnl"], 2), "trades": s["trades"], "streak": s["streak"], "last": s["last"]})
+        grok = {"on": self.grok is not None, "model": self.cfg.grok.model, "budget": self.cfg.grok.daily_budget_usd,
+                "spent": round(self.grok.spent_today(), 4) if self.grok else 0.0, "xCheck": self.cfg.grok.x_check,
+                "picks": self.cfg.grok.pick_traders, "why": "" if self.grok else ("off in config" if not self.cfg.grok.enabled else "no XAI_API_KEY")}
         return {
             "mode": self.mode, "now": now, "killed": self.kill.tripped, "killReason": self.kill.reason, "results": results,
             "wsConnected": bool(getattr(self.watcher, "ws_connected", False)),
@@ -553,8 +780,10 @@ class CopyBot:
                            "copyRatio": self.cfg.copy.copy_ratio, "last6": st["last"], "withHim": round(st["pnl"], 2)} if cur else None),
             "fireRule": {"after": self.cfg.copy.fire_after_losses, "streak": st["streak"] if st else 0, "firedSoFar": self.rot.s["fires"]},
             "equity": curve, "stints": self.rot.s["stints"], "lineup": lineup, "positions": positions, "crowd": crowd_state,
+            "window": window, "follows": follows, "grok": grok,
             "feed": [{"t": r["t"], "kind": r["kind"], "text": r["text"], "pnl": r["pnl"]} for r in self.journal.events(self.mode, 80)],
             "dailyStop": self.journal.get(f"daily_stop:{self.mode}") == datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d"),
             "limits": {"maxTrade": self.cfg.copy.max_trade_usd, "maxOpen": self.cfg.limits.max_open_positions, "copyRatio": self.cfg.copy.copy_ratio,
+                       "riskCap": self.cfg.limits.max_position_pct, "fireAfter": self.cfg.copy.fire_after_losses,
                        "stopLoss": self.cfg.exits.stop_loss_pct, "maxDrawdown": self.cfg.limits.max_drawdown_pct},
         }

@@ -11,6 +11,9 @@
 > fires them after 2 losses in a row, like the copyfomo video. Guides in Vietnamese: [`HUONG_DAN.md`](HUONG_DAN.md)
 > (step by step, A to Z) and [`FOMO_BOT.md`](FOMO_BOT.md).
 > Try it with no keys: `./fomo.sh demo`, then open http://localhost:8001.
+> **Grok bot** (`./grok.sh`): the Grok x copyfomo video. Overnight (22:00-08:00) it copies the weekly top #1 and #2,
+> switches trader after 2 losses in a row, and xAI's Grok orders the bench and reads X about every coin it copies.
+> Guide in Vietnamese: [`HUONG_DAN_GROK.md`](HUONG_DAN_GROK.md). Try it with no keys: `./grok.sh demo`, then http://localhost:8005.
 > **Crowd mode** (the shipped config): copies the top 1..500 wallets at once, small tickets, each trader fired
 > on its own after 3 losses. Guide in Vietnamese: [`HUONG_DAN_COPY500.md`](HUONG_DAN_COPY500.md).
 

@@ -16,6 +16,10 @@ copy:
   max_signal_age_seconds: 60  # don't copy a trade we only saw this late
   max_chase_pct: 20           # skip if our price is this much above the price the trader paid
   rebuy_cooldown_hours: 24    # don't buy a token again this soon after selling it
+  follow_count: 1             # copied at once when follow_all is false
+  window: null                # e.g. "22:00-08:00": new copies only inside this daily window; null = always
+  window_timezone: local
+  close_at_window_end: false
   follow_all: false
 
 watch:
@@ -51,3 +55,21 @@ limits:                       # hard limits: no rule or trader overrides these
 
 paper:
   slippage_bps: 150           # extra cost per side versus the quote, for the seconds a live copy takes to land
+
+notify:
+  big_win_pct: 50             # a copy that closes this much up gets its own notification
+  digest_minutes: 0           # 0 = off; e.g. 30: "Copied N trades · xW yL" every 30 minutes
+
+grok:                         # xAI Grok as the brain (config/grok.yaml turns it on); off here
+  enabled: false
+  model: grok-4.7
+  pick_traders: true
+  pick_from: 10
+  x_check: false
+  x_check_min_usd: 5
+  daily_budget_usd: 1.0
+  price_in_per_mtok: 2.0
+  price_out_per_mtok: 6.0
+  price_per_1k_x_posts: 5.0
+  assumed_posts_per_search: 20
+  timeout_seconds: 60

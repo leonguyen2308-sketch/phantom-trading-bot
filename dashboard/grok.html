@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Grok Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<style>
+/* The Grok bot as a phone lock screen, like the video: the big clock, the bot's widget (balance, multiple, win-rate
+   ring, the night window bar with a dot per copy) and the stack of notifications. Below it, what a lock screen
+   can't show: who is being copied, Grok's spend, the open copies and the kill switch. Dark only. */
+:root {
+  --bg-top: #3a1d12;
+  --bg-mid: #1a0f0b;
+  --bg-low: #070605;
+  --glass: rgba(40, 32, 28, .62);
+  --glass-hi: rgba(64, 52, 44, .7);
+  --line: rgba(255, 255, 255, .08);
+  --fg: #f6f1ec;
+  --fg-2: #c7bdb4;
+  --fg-3: #8d847c;
+  --gold: #f4c95d;
+  --good: #34d27b;
+  --bad: #ff5d5d;
+  --blue: #6aa8ff;
+  --font: "Inter", -apple-system, "SF Pro Display", "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body { background: radial-gradient(120% 70% at 50% 0%, var(--bg-top), var(--bg-mid) 55%, var(--bg-low)); background-attachment: fixed;
+  color: var(--fg); font: 14px/1.4 var(--font); min-height: 100vh; padding: 14px 16px 40px; }
+.phone { max-width: 430px; margin: 0 auto; }
+.num { font-variant-numeric: tabular-nums; }
+.muted { color: var(--fg-3); } .good { color: var(--good); } .bad { color: var(--bad); }
+
+.date { text-align: center; color: var(--fg-2); font-weight: 600; margin-top: 18px; font-size: 17px; }
+.clock { text-align: center; font-weight: 800; font-size: 88px; line-height: 1; letter-spacing: -2px; margin: 4px 0 6px; }
+.chips { display: flex; justify-content: center; gap: 6px; margin-bottom: 14px; flex-wrap: wrap; }
+.chip { background: rgba(255,255,255,.1); border-radius: 999px; padding: 3px 10px; font-size: 11.5px; font-weight: 600; color: var(--fg-2); }
+.chip .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); margin-right: 5px; vertical-align: 1px; }
+.chip.demo .dot { background: var(--gold); } .chip.paper .dot { background: var(--blue); } .chip.off .dot { background: var(--bad); }
+
+.card { background: var(--glass); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border-radius: 20px; padding: 12px 14px;
+  border: 1px solid var(--line); margin-bottom: 8px; }
+.widget .top { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); font-weight: 600; }
+.widget .live { color: var(--good); font-weight: 700; }
+.widget .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.bal { font-size: 34px; font-weight: 800; color: var(--gold); letter-spacing: -.5px; }
+.bal small { font-size: 18px; }
+.sub { font-size: 12px; font-weight: 600; }
+.ring { width: 54px; height: 54px; flex: none; position: relative; }
+.ring svg { transform: rotate(-90deg); }
+.ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; }
+.wl { font-size: 10.5px; color: var(--fg-3); text-align: center; margin-top: 2px; }
+.bar { position: relative; height: 4px; background: rgba(255,255,255,.12); border-radius: 4px; margin: 12px 0 6px; }
+.bar .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--gold); border-radius: 4px; }
+.bar .tick { position: absolute; top: -2px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: #fff3d6; border: 1px solid rgba(0,0,0,.4); }
+.barlabels { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--fg-3); }
+
+.note { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; }
+.icon { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; font-weight: 800; font-size: 13px; color: #111; }
+.app { display: flex; justify-content: space-between; font-size: 10.5px; color: var(--fg-3); text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.title { font-weight: 700; font-size: 14px; margin-top: 1px; }
+.body { font-size: 12.5px; color: var(--fg-2); margin-top: 1px; overflow-wrap: anywhere; }
+.note.big { background: linear-gradient(160deg, rgba(120, 92, 30, .75), rgba(60, 46, 18, .78)); border-color: rgba(244, 201, 93, .45); }
+.note.big .amount { font-size: 30px; font-weight: 800; color: var(--good); letter-spacing: -.5px; }
+.note.big .pct { font-weight: 800; color: var(--good); font-size: 16px; }
+.note.closed { background: linear-gradient(160deg, rgba(22, 92, 52, .78), rgba(14, 50, 30, .8)); border-color: rgba(52, 210, 123, .45); }
+.note.closed .title { font-size: 19px; }
+.note.alarm { border-color: rgba(255, 93, 93, .6); }
+
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--fg-3); margin: 22px 4px 8px; }
+.trader { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; }
+.trader .name { font-weight: 700; }
+.boxes { display: flex; gap: 4px; }
+.boxes span { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; font-weight: 800; background: rgba(255,255,255,.08); color: var(--fg-3); }
+.boxes span.L { background: rgba(255, 93, 93, .25); color: var(--bad); } .boxes span.W { background: rgba(52, 210, 123, .22); color: var(--good); }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+td { padding: 5px 2px; border-bottom: 1px solid var(--line); }
+td.r { text-align: right; }
+.toggle { background: none; border: 1px solid var(--line); color: var(--fg-2); border-radius: 999px; padding: 4px 12px; font: 600 12px var(--font); cursor: pointer; }
+button.kill { width: 100%; margin-top: 18px; background: rgba(255, 93, 93, .12); border: 1px solid var(--bad); color: var(--bad); border-radius: 14px;
+  padding: 12px; font: 700 14px var(--font); cursor: pointer; }
+button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.banner { border-radius: 14px; padding: 10px 12px; font-weight: 600; font-size: 12.5px; margin-bottom: 8px; background: rgba(0,0,0,.35); border: 1px solid var(--line); }
+.banner.sim { border-color: rgba(244, 201, 93, .5); } .banner.kill { border-color: var(--bad); color: #ffd0d0; }
+.foot { color: var(--fg-3); font-size: 11px; text-align: center; margin-top: 18px; }
+@media (max-width: 380px) { .clock { font-size: 72px; } .bal { font-size: 30px; } }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="banner sim" id="simBanner" hidden>SIMULATION: made-up traders and coins, a stand-in for Grok, fake money. These numbers say nothing about real results.</div>
+  <div class="banner sim" id="sampleBanner" hidden>SAMPLE DATA: the bot isn't running. Start it with ./grok.sh demo (or paper) and open http://localhost:8005</div>
+  <div class="banner kill" id="killBanner" hidden></div>
+  <div class="banner" id="stopBanner" hidden>Daily loss limit hit: no new copies until 00:00 UTC.</div>
+
+  <div class="date" id="date">–</div>
+  <div class="clock num" id="clock">--:--</div>
+  <div class="chips"><span class="chip" id="modeChip"><span class="dot"></span><span id="modeTxt">PAPER</span></span><span class="chip" id="wsChip">live stream</span><span class="chip" id="grokChip">Grok</span></div>
+
+  <div class="card widget">
+    <div class="top"><span>⚡ Grok Bot</span><span class="live" id="liveTxt">● LIVE</span><span class="muted" id="topNote"></span></div>
+    <div class="row">
+      <div>
+        <div class="bal num" id="bal">$0<small>.00</small></div>
+        <div class="sub num" id="sub">+$0.00 · 1.0x</div>
+      </div>
+      <div><div class="ring" id="ring"></div><div class="wl num" id="wl">0W · 0L</div></div>
+    </div>
+    <div class="bar" id="bar"><div class="fill" id="barFill"></div></div>
+    <div class="barlabels"><span id="barStart">22:00</span><span id="barMid">copying · night window</span><span id="barEnd">08:00</span></div>
+  </div>
+
+  <div class="row" style="display:flex;justify-content:flex-end;margin:6px 0"><button class="toggle" id="allBtn" type="button">show every line</button></div>
+  <div id="notes"></div>
+
+  <h3>Copying now</h3>
+  <div class="card" id="follows"></div>
+
+  <h3>Open copies</h3>
+  <div class="card"><table><tbody id="pos"></tbody></table></div>
+
+  <h3>Grok</h3>
+  <div class="card" id="grok"></div>
+
+  <button class="kill" id="killBtn" type="button">KILL SWITCH · sell everything and stop</button>
+  <div class="foot" id="limits"></div>
+  <div class="foot">Every number here is the bot's own record. A copy always lands seconds after the trader: expect to pay for that.</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const money = v => (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const signed = v => (v >= 0 ? "+" : "-") + "$" + Math.abs(v).toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const hm = t => new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", hour12: false});
+function ago(t, now) { const m = Math.max(0, Math.round((now - t) / 60)); return m < 1 ? "now" : m < 60 ? `${m}m ago` : `${Math.floor(m / 60)}h ago`; }
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+const NOTE_KINDS = new Set(["COPY", "BIG", "DIGEST", "SWITCH", "GROK", "WINDOW", "STOP", "KILL", "WARN"]);
+const ICON = {COPY: ["#6aa8ff", "CP"], BIG: ["#f4c95d", "$"], DIGEST: ["#6aa8ff", "CP"], SWITCH: ["#f6f1ec", "G"], GROK: ["#f6f1ec", "G"],
+  WINDOW: ["#34d27b", "◐"], STOP: ["#ffb020", "!"], KILL: ["#ff5d5d", "✕"], WARN: ["#ffb020", "!"], EXIT: ["#8d847c", "↗"], SKIP: ["#8d847c", "·"],
+  SIG: ["#8d847c", "·"], SCAN: ["#8d847c", "·"], PICK: ["#8d847c", "·"], FIRE: ["#ff5d5d", "·"]};
+const APP = {COPY: "Copy", BIG: "Copy · big win", DIGEST: "Copy", SWITCH: "Grok", GROK: "Grok", WINDOW: "Grok Bot", STOP: "Limits", KILL: "Kill switch", WARN: "Warning"};
+let showAll = false;
+try { showAll = localStorage.getItem("grokShowAll") === "1"; } catch (e) {}
+
+function ring(pct) {
+  const r = 22, c = 2 * Math.PI * r, v = Math.max(0, Math.min(1, pct || 0));
+  return `<svg width="54" height="54"><circle cx="27" cy="27" r="${r}" stroke="rgba(255,255,255,.12)" stroke-width="5" fill="none"/>` +
+    `<circle cx="27" cy="27" r="${r}" stroke="#34d27b" stroke-width="5" fill="none" stroke-linecap="round" stroke-dasharray="${c * v} ${c}"/></svg>` +
+    `<b>${Math.round(v * 100)}%</b>`;
+}
+
+function note(e, now) {
+  const parts = e.text.split(" · ");
+  let title = parts[0], body = parts.slice(1).join(" · ");
+  const kind = e.kind;
+  const card = el("div", "card note"), [col, ab] = ICON[kind] || ["#8d847c", "·"];
+  const icon = el("div", "icon", ab); icon.style.background = col;
+  const box = el("div");
+  const app = el("div", "app"); app.append(el("span", null, APP[kind] || kind), el("span", null, ago(e.t, now)));
+  box.append(app);
+  if (kind === "BIG") {
+    card.classList.add("big");
+    title = parts.slice(0, 2).join(" · ");
+    const pct = (e.text.match(/\(\+?(-?\d+)%\)/) || [])[1];
+    box.append(el("div", "title", title), el("div", "body", parts.slice(3).join(" · ")));
+    const row = el("div"); row.style.display = "flex"; row.style.justifyContent = "space-between"; row.style.alignItems = "baseline";
+    row.append(el("span", "amount num", signed(e.pnl || 0)), el("span", "pct num", pct ? `+${pct}%` : ""));
+    box.append(row);
+  } else if (kind === "WINDOW" && /closed/.test(title)) {
+    card.classList.add("closed");
+    box.append(el("div", "body", title), el("div", "title num", parts[1] || ""), el("div", "body", parts.slice(2).join(" · ")));
+  } else {
+    if (kind === "KILL" || kind === "STOP") card.classList.add("alarm");
+    box.append(el("div", "title", title));
+    if (body) box.append(el("div", "body", body));
+    if (e.pnl != null && kind !== "WINDOW") { const p = el("div", "body num " + (e.pnl >= 0 ? "good" : "bad"), signed(e.pnl)); box.append(p); }
+  }
+  card.append(icon, box);
+  return card;
+}
+
+function render(s) {
+  const now = s.now, d = new Date(now * 1000);
+  $("date").textContent = d.toLocaleDateString([], {weekday: "long", day: "numeric", month: "long"});
+  $("clock").textContent = hm(now);
+  $("simBanner").hidden = s.mode !== "demo";
+  $("killBanner").hidden = !s.killed;
+  $("killBanner").textContent = "KILL SWITCH ON: " + (s.killReason || "") + (s.mode === "demo" ? ". Restart the demo to clear it." : ". Copies are being sold; nothing new is copied until ./grok.sh reset.");
+  $("stopBanner").hidden = !s.dailyStop || s.killed;
+  $("modeChip").className = "chip " + (s.killed ? "off" : s.mode);
+  $("modeTxt").textContent = s.killed ? "HALTED" : s.mode.toUpperCase();
+  $("wsChip").textContent = s.mode === "demo" ? "simulated" : s.wsConnected ? "live stream" : "polling";
+  $("grokChip").textContent = s.grok.on ? `Grok · $${s.grok.spent.toFixed(2)} / $${s.grok.budget}` : `Grok off (${s.grok.why})`;
+
+  const w = s.window;
+  const base = w && w.open && w.startEquity ? w.startEquity : s.start;
+  const pnl = s.balance - base, mult = base ? s.balance / base : 1;
+  const [whole, cents] = money(s.balance).split(".");
+  $("bal").replaceChildren(document.createTextNode(whole), Object.assign(el("small"), {textContent: "." + (cents || "00")}));
+  $("sub").textContent = `${signed(pnl)} · ${mult.toFixed(1)}x`;
+  $("sub").className = "sub num " + (pnl >= 0 ? "good" : "bad");
+  const wins = w ? w.wins : s.results.wins, losses = w ? w.losses : s.results.n - s.results.wins;
+  $("ring").innerHTML = ring(wins + losses ? wins / (wins + losses) : 0);
+  $("wl").textContent = `${wins}W · ${losses}L`;
+  const live = !s.killed && (!w || w.open);
+  $("liveTxt").textContent = s.killed ? "● HALTED" : live ? "● LIVE" : "● DONE";
+  $("liveTxt").style.color = s.killed ? "var(--bad)" : live ? "var(--good)" : "var(--fg-3)";
+  $("topNote").textContent = s.mode === "live" ? "real money" : s.mode === "paper" ? "· fake money" : "· simulation";
+  const bar = $("bar");
+  bar.querySelectorAll(".tick").forEach(x => x.remove());
+  if (w) {
+    $("barStart").textContent = hm(w.start); $("barEnd").textContent = hm(w.end);
+    $("barMid").textContent = w.open ? "copying · night window" : `window closed · opens ${hm(w.start)}`;
+    const frac = w.open ? (now - w.start) / (w.end - w.start) : (w.endEquity != null ? 1 : 0);
+    $("barFill").style.width = Math.max(0, Math.min(1, frac)) * 100 + "%";
+    for (const t of w.copies || []) {
+      const f = (t - w.start) / (w.end - w.start);
+      if (f >= 0 && f <= 1) { const k = el("div", "tick"); k.style.left = f * 100 + "%"; bar.append(k); }
+    }
+  } else {
+    $("barStart").textContent = ""; $("barEnd").textContent = ""; $("barMid").textContent = "copying all day"; $("barFill").style.width = "100%";
+  }
+
+  const box = $("notes"); box.replaceChildren();
+  const items = s.feed.filter(e => showAll || NOTE_KINDS.has(e.kind)).slice(0, showAll ? 60 : 14);
+  for (const e of items) box.append(note(e, now));
+  if (!items.length) box.append(el("div", "card muted", w && !w.open ? `Nothing yet. Copying starts at ${hm(w.start)}.` : "Waiting for the first trade of a trader we copy…"));
+  $("allBtn").textContent = showAll ? "only notifications" : "show every line";
+
+  const f = $("follows"); f.replaceChildren();
+  for (const t of s.follows) {
+    const row = el("div", "trader");
+    const left = el("div");
+    left.append(el("div", "name", `@${t.handle} · weekly top #${t.rank}`),
+      el("div", "body num", `${t.winRate != null ? Math.round(t.winRate * 100) + "% win rate · " : ""}${t.pnl7d != null ? signed(t.pnl7d) + " this week · " : ""}${t.trades} copies, ${signed(t.us)} for us`));
+    const boxes = el("div", "boxes");
+    for (let i = 0; i < s.limits.fireAfter; i++) { const b = el("span", i < t.streak ? "L" : "", i < t.streak ? "L" : "–"); boxes.append(b); }
+    row.append(left, boxes); f.append(row);
+  }
+  if (!s.follows.length) f.append(el("div", "muted", "nobody yet: waiting for the weekly top (./grok.sh traders)"));
+  const fr = el("div", "body muted"); fr.style.marginTop = "6px";
+  fr.textContent = `${s.limits.fireAfter} losses in a row → Grok switches to the next trader · switched ${s.fireRule.firedSoFar} times so far`;
+  f.append(fr);
+
+  const tb = $("pos"); tb.replaceChildren();
+  for (const p of s.positions) {
+    const tr = el("tr");
+    tr.append(el("td", null, "$" + p.symbol), el("td", "muted", "@" + p.handle), el("td", "r num", money(p.value)),
+      el("td", "r num " + (p.pnlPct >= 0 ? "good" : "bad"), (p.pnlPct >= 0 ? "+" : "") + p.pnlPct.toFixed(1) + "%"), el("td", "r num muted", p.ageMin + "m"));
+    tb.append(tr);
+  }
+  if (!s.positions.length) { const tr = el("tr"); const td = el("td", "muted", "none"); tr.append(td); tb.append(tr); }
+
+  const g = $("grok"); g.replaceChildren();
+  g.append(el("div", "body", s.grok.on ? `${s.grok.model} · spent $${s.grok.spent.toFixed(2)} of $${s.grok.budget} today` : `Grok is off: ${s.grok.why}. The bot copies in leaderboard order, with no X checks.`));
+  if (s.grok.on) g.append(el("div", "body muted", `${s.grok.picks ? "orders the weekly top (who is copied next)" : ""}${s.grok.picks && s.grok.xCheck ? " · " : ""}${s.grok.xCheck ? "reads X about every coin we copy: a rug or scam warning sells it" : ""}`));
+  const L = s.limits;
+  $("limits").textContent = `risk cap ${Math.round(L.riskCap * 100)}% per trade · ${L.maxOpen} open at most · stop loss ${L.stopLoss == null ? "off" : "-" + L.stopLoss + "%"} · kill switch at -${Math.round(L.maxDrawdown * 100)}% from the high`;
+}
+
+$("allBtn").addEventListener("click", () => { showAll = !showAll; try { localStorage.setItem("grokShowAll", showAll ? "1" : "0"); } catch (e) {} tick(); });
+$("killBtn").addEventListener("click", async () => {
+  if (!confirm("Fire the kill switch? The bot sells every copy and stops copying until you reset it.")) return;
+  try { await fetch("/api/kill", {method: "POST", headers: {"x-phantom": "1"}}); } catch (e) { alert("Could not reach the bot."); }
+});
+
+const SAMPLE = (() => {
+  const now = Math.floor(Date.now() / 1000), start = now - 3 * 3600, end = start + 10 * 3600;
+  return {mode: "sample", now, killed: false, killReason: "", wsConnected: true, balance: 283.69, start: 115, dailyStop: false,
+    results: {n: 13, wins: 11, pnl: 168.69},
+    window: {label: "22:00 → 08:00", open: true, start, end, startEquity: 115, wins: 11, losses: 2, copies: [start + 1500, start + 3300, start + 4700, start + 7600, start + 9900]},
+    follows: [{handle: "sample_one", rank: 1, winRate: 0.81, pnl7d: 41000, trades: 7, us: 120.4, streak: 0, last: ["W", "W"]},
+              {handle: "sample_two", rank: 2, winRate: 0.74, pnl7d: 23000, trades: 6, us: 48.3, streak: 1, last: ["W", "L"]}],
+    fireRule: {firedSoFar: 1}, positions: [{symbol: "SAMPLE", handle: "sample_one", value: 61.2, pnlPct: 18.4, ageMin: 22}],
+    grok: {on: true, model: "grok-4.7", spent: 0.42, budget: 2, picks: true, xCheck: true, why: ""},
+    limits: {riskCap: 0.45, maxOpen: 4, stopLoss: 50, maxDrawdown: 0.5, fireAfter: 2},
+    feed: [{t: now - 60, kind: "BIG", text: "Big win · sold $SAMPLE · +$54.86 (+66%) · copied from weekly top #1 · @sample_one · exit 0.6s after the trader sold · held 38m", pnl: 54.86},
+           {t: now - 900, kind: "DIGEST", text: "Copied 5 trades · 4W 1L · $AAA +$2.96 · $BBB +$3.38 · $CCC -$0.93", pnl: 5.41},
+           {t: now - 1800, kind: "SWITCH", text: "Grok switched trader · @sample_three took 2 losses in a row · now copying weekly top #2 @sample_two · 74% win rate", pnl: null},
+           {t: now - 2400, kind: "COPY", text: "@sample_one bought $SAMPLE · $48,200 in · copy 0.25x · mirrored with $51.75 · inside the risk cap · weekly top #1", pnl: null},
+           {t: start, kind: "WINDOW", text: "Copy window open · 22:00 → 08:00 · following @sample_one (#1) and @sample_three (#3) · risk cap 45% per trade · keep the Mac on charge", pnl: null}]};
+})();
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    if (!r.ok) throw new Error(r.status);
+    $("sampleBanner").hidden = true; render(await r.json());
+  } catch (e) { $("sampleBanner").hidden = false; render(SAMPLE); }
+}
+tick(); setInterval(tick, 1500);
+</script>
+</body>
+</html>

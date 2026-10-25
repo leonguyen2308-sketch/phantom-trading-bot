@@ -1,0 +1,78 @@
+# GROK BOT: the bot from the Grok x copyfomo video. Overnight (22:00 -> 08:00) it copies the two best traders of
+# the weekly top at once ("#1 and #2"), mirrors each buy inside a risk cap, sells when they sell, and when one of them
+# loses 2 copies in a row Grok switches to the next trader. Grok (xAI, key in .env as XAI_API_KEY) puts the weekly
+# top in order and reads X about every coin we copy: a rug or scam warning there makes the bot sell at once.
+# Run it with ./grok.sh demo (made-up night, no keys), ./grok.sh paper (real traders, fake money), ./grok.sh live.
+# The bot records this file's hash when you approve it (./grok.sh approve) and refuses to trade live if it changes.
+# Percentages are written as numbers (50 = 50%), shares of equity as fractions (0.45 = 45%).
+
+copy:
+  follow_all: false   # copy a few traders, not the whole list
+  lineup_size: 10   # the weekly top 10 is the bench: a fired trader is replaced from it
+  copy_ratio: 0.25            # our buy = the trader's buy x 0.25 ("copy 0.25x" in the video)
+  min_trade_usd: 2
+  max_trade_usd: 1000   # the risk cap below decides the size, not this
+  exit_with_trader: true      # when the trader sells, sell the same share they sold ("exits when he sells")
+  fire_after_losses: 2   # "took 2 losses in a row" -> switch
+  refresh_hours: 24           # reload the top list this often
+  fire_cooldown_days: 7       # a fired trader can't be copied again for this long
+  only_first_buy: false       # true = don't copy a trader adding more to a token they already hold
+  max_signal_age_seconds: 60  # don't copy a trade we only saw this late
+  max_chase_pct: 20           # skip if our price is this much above the price the trader paid
+  rebuy_cooldown_hours: 24    # don't buy a token again this soon after selling it
+  follow_count: 2   # "Following Oura456 (#1) and BtheBezel (#2)": the two best at once
+  window: "22:00-08:00"   # the night copy window: new copies only between 22:00 and 08:00 (exits run all the time)
+  window_timezone: local   # the Mac's own clock (Vietnam time on a Mac set to Vietnam)
+  close_at_window_end: false   # true = sell whatever is still open at 08:00
+
+watch:                        # reading 500 wallets live (every number here is a free-plan limit, not a strategy choice)
+  ws_connections: 5           # Helius free plan: 5 websocket connections
+  wallets_per_connection: 100 # 5 x 100 = 500 wallets
+  max_wallet_txs_per_hour: 120   # a wallet busier than this is a bot, or too fast to copy: ignored for 6 hours
+  max_tx_reads_per_hour: 1000    # 1000/h is about 720k RPC credits a month: inside the free 1M. Trades of coins we hold are read first
+
+exits:
+  stop_loss_pct: 35           # sell a copy that falls this much (the trader's own exit usually comes first)
+  take_profit_pct: null       # sell everything at this gain (null = only when the trader sells)
+  max_hold_hours: 24
+
+safety:                       # checked before every buy; any failure skips the copy
+  min_liquidity_usd: 15000
+  min_market_cap_usd: 30000
+  max_market_cap_usd: null
+  require_mint_authority_revoked: true     # otherwise the creator can print more tokens
+  require_freeze_authority_revoked: true   # otherwise the creator can freeze your tokens (you can't sell)
+  blocked_token2022_extensions: [transferHook, permanentDelegate, nonTransferable, transferFeeConfig, defaultAccountState, pausableConfig]
+  max_price_impact_pct: 5
+  check_sell_route: true      # also quote selling it straight back: no route = honeypot, skip
+  max_round_trip_loss_pct: 15 # skip if buying and selling straight back would lose more than this
+
+limits:                       # hard limits: no rule or trader overrides these
+  max_open_positions: 4
+  max_position_pct: 0.25      # risk cap per trade. The video says 45%: with a 35% stop that loses ~16% of the account on one bad copy; 25% loses ~9%
+  max_exposure_pct: 0.60      # all copies together
+  daily_loss_limit_pct: 0.3
+  max_drawdown_pct: 0.5
+  max_consecutive_api_errors: 10   # kill switch
+  min_sol_for_fees: 0.03      # live only: keep this much SOL for network fees and token accounts
+
+paper:
+  slippage_bps: 150           # extra cost per side versus the quote, for the seconds a live copy takes to land
+
+notify:
+  big_win_pct: 50   # "Big win · sold $POKEMON +66%"
+  digest_minutes: 30   # "Copied 5 trades · 4W 1L" every 30 minutes
+
+grok:                         # xAI Grok as the brain
+  enabled: true   # Grok ON (needs XAI_API_KEY in .env; without it the bot runs by the rules alone)
+  model: grok-4.7
+  pick_traders: true
+  pick_from: 10
+  x_check: true   # after each copy Grok searches X for the coin's address; a rug/scam warning sells it at once
+  x_check_min_usd: 5
+  daily_budget_usd: 2.0   # about $0.10 per X check + a few cents per pick: ~20 checks a night, then the rules alone
+  price_in_per_mtok: 2.0
+  price_out_per_mtok: 6.0
+  price_per_1k_x_posts: 5.0
+  assumed_posts_per_search: 20
+  timeout_seconds: 60

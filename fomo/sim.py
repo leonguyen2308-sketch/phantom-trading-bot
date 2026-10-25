@@ -64,11 +64,11 @@ SYLLABLES = ["MO", "OG", "PEP", "WIF", "BON", "ZO", "KAI", "NYA", "TOAD", "CHI",
 
 
 class SimWorld:
-    def __init__(self, seed: int | None = None, speed: float = 60.0, latency: float = 6.0, n_traders: int = 6):
+    def __init__(self, seed: int | None = None, speed: float = 60.0, latency: float = 6.0, n_traders: int = 6, start: float | None = None):
         self.rng = random.Random(seed)
         self.speed, self.latency = speed, latency
         self.real0 = time.monotonic()
-        self.t0 = time.time()
+        self.t0 = start or time.time()  # the Grok demo starts a minute before its night window opens
         self.tokens: dict[str, SimToken] = {}
         self.events: list[Swap] = []
         names = [("sim_ace", 0.55, 900), ("sim_blaze", 0.35, 700), ("sim_cobra", 0.25, 800),

@@ -67,20 +67,21 @@ def paper_summary(j: Journal) -> tuple[float, int, str]:
     return hours, copies, s
 
 
-def go_live_report(state: Path, config: Path) -> Report:
+def go_live_report(state: Path, config: Path, prefix: str = "fomo", env: str = "FOMO") -> Report:
+    """prefix/env: "fomo"/"FOMO" for the FOMO copy bot, "grok"/"GROK" for the Grok bot (its own files and wallet)."""
     checks: list[Check] = []
-    approved = state / "fomo_approved.sha256"
+    approved = state / f"{prefix}_approved.sha256"
     ok = approved.exists() and config.exists() and approved.read_text().strip() == file_sha256(config)
-    checks.append(Check("limits approved", ok, "config/fomo.yaml approved and unchanged" if ok else "run ./fomo.sh approve"))
-    ack = state / "fomo_ack_risks.json"
+    checks.append(Check("limits approved", ok, f"{config} approved and unchanged" if ok else f"run ./{prefix}.sh approve"))
+    ack = state / f"{prefix}_ack_risks.json"
     ok = ack.exists() and json.loads(ack.read_text()).get("count") == len(BLOW_UP_RISKS)
-    checks.append(Check("risks read", ok, "every risk accepted" if ok else "run ./fomo.sh ack-risks"))
-    hours, copies, summary = paper_summary(Journal(state / "fomo.sqlite"))
+    checks.append(Check("risks read", ok, "every risk accepted" if ok else f"run ./{prefix}.sh ack-risks"))
+    hours, copies, summary = paper_summary(Journal(state / f"{prefix}.sqlite"))
     ok = hours >= MIN_PAPER_HOURS and copies >= MIN_PAPER_COPIES
     checks.append(Check("paper run works", ok, f"{hours:.0f}h and {copies} copies on paper (need {MIN_PAPER_HOURS}h and "
                                                 f"{MIN_PAPER_COPIES}: proves your RPC sees the trades and Jupiter fills them)"))
-    keys = [k for k in ("FOMO_BOT_PRIVATE_KEY", "FOMO_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL") if not os.environ.get(k)]
+    keys = [k for k in (f"{env}_BOT_PRIVATE_KEY", f"{env}_BOT_ADDRESS", "JUPITER_API_KEY", "SOLANA_RPC_URL") if not os.environ.get(k)]
     checks.append(Check("keys in .env", not keys, "all set" if not keys else f"missing {', '.join(keys)}"))
-    ok = os.environ.get("FOMO_LIVE") == "yes"
-    checks.append(Check("FOMO_LIVE=yes", ok, "set in .env" if ok else "set FOMO_LIVE=yes in .env when you are sure"))
+    ok = os.environ.get(f"{env}_LIVE") == "yes"
+    checks.append(Check(f"{env}_LIVE=yes", ok, "set in .env" if ok else f"set {env}_LIVE=yes in .env when you are sure"))
     return Report(checks, summary)
