@@ -2,7 +2,7 @@
 window.KIMLAUNCH_CONFIG = {
   // Name shown in the header, and your site's address (written into every coin's metadata).
   siteName: "kimlaunch",
-  siteUrl: "",
+  siteUrl: "https://kimrocket.netlify.app",
 
   // "mainnet" for real coins, "devnet" to test with free SOL first.
   network: "mainnet",
