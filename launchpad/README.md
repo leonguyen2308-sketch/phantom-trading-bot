@@ -107,6 +107,7 @@ npm run build      # build src/ thành site/assets/app.js (cần chạy lại sa
 npm run serve      # xem thử ở http://localhost:8080
 npm run e2e        # chạy thử toàn bộ web trên Chromium với blockchain/ví giả (cần Playwright)
 npm run promo      # quay video giới thiệu (cần Playwright, ffmpeg, python3 + numpy) vào thư mục promo/
+npm run poster     # vẽ poster "launching soon" (bản ngang và bản vuông, cần Playwright) vào thư mục promo/
 ```
 
 ```
