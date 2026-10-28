@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-28 -4 96 96">
+  <g stroke="#fff2d8" stroke-width="2.4" stroke-linecap="round" opacity=".55">
+    <path d="M-6 74 L10 58"/><path d="M-20 62 L2 40" opacity=".7"/><path d="M4 90 L22 72" opacity=".7"/>
+  </g>
+  <g transform="rotate(45 32 32)">
+    <path d="M26 46 C26 53 29 58.5 32 62.5 C35 58.5 38 53 38 46 Z" fill="#ffcb45"/>
+    <path d="M28.6 46 C28.6 51 30.3 54.6 32 57 C33.7 54.6 35.4 51 35.4 46 Z" fill="#ff4436"/>
+    <path d="M22.2 32 L13 42.5 L13 49 L23 44.5 Z" fill="#ff4436"/>
+    <path d="M41.8 32 L51 42.5 L51 49 L41 44.5 Z" fill="#ff4436"/>
+    <path d="M22.2 32 L13 42.5 L13 44 L22.4 36 Z" fill="#ff6a5f"/>
+    <path d="M32 3 C42 11 45 24 43 46 L21 46 C19 24 22 11 32 3 Z" fill="#fff2d8"/>
+    <path d="M32 3 C37 7 40 12 41.4 17 L22.6 17 C24 12 27 7 32 3 Z" fill="#ff4436"/>
+    <path d="M38.5 17 C40.6 24 41.3 33 40.6 46 L43 46 C45 24 42 11 32 3 C35.5 6 37.6 11 38.5 17 Z" fill="#000" opacity=".08"/>
+    <circle cx="32" cy="27" r="6.6" fill="#13213f" stroke="#d9c7a3" stroke-width="2"/>
+    <path d="M32 23 L33 25.62 L35.8 25.76 L33.62 27.53 L34.35 30.24 L32 28.7 L29.65 30.24 L30.38 27.53 L28.2 25.76 L31 25.62 Z" fill="#ff4436"/>
+    <rect x="21.2" y="41.5" width="21.6" height="4.5" rx="1.2" fill="#d9c7a3"/>
+  </g>
+</svg>

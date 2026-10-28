@@ -22,21 +22,22 @@ function pick(list, r) {
 }
 
 function rng(seed) {
-  let s = seed >>> 0 || 1;
-  return () => {
+  let s = (Math.imul(seed >>> 0, 2654435761) ^ 0x9e3779b9) >>> 0 || 1;
+  const next = () => {
     s ^= s << 13;
     s ^= s >>> 17;
     s ^= s << 5;
     return (s >>> 0) / 2 ** 32;
   };
+  for (let i = 0; i < 8; i++) next(); // small seeds start correlated
+  return next;
 }
 
-function tickerFor(name) {
-  const words = name.toUpperCase().replace(/[^A-Z0-9 ]/g, "").split(/\s+/).filter(Boolean);
-  if (words.length === 1) return words[0].slice(0, 6);
-  const last = words[words.length - 1];
-  const t = words.length > 2 ? words.map((w) => w[0]).join("") + last.slice(1, 3) : words[0].slice(0, 2) + last.slice(0, 4);
-  return t.slice(0, 8);
+// The meme word carries the ticker: "Comrade Pepe Army" -> CPEPE.
+function tickerFor(name, animal) {
+  const first = name.toUpperCase().replace(/[^A-Z]/g, "").charAt(0);
+  const core = animal.toUpperCase().replace(/[^A-Z]/g, "");
+  return (name.trim().split(/\s+/).length > 2 ? first + core : core).slice(0, 8);
 }
 
 export function pitchThree(seed = Date.now()) {
@@ -44,11 +45,12 @@ export function pitchThree(seed = Date.now()) {
   const ideas = [];
   const seen = new Set();
   while (ideas.length < 3) {
-    let name = `${pick(FIRST, r)} ${pick(SECOND, r)}${pick(THIRD, r)}`.trim();
+    const animal = pick(SECOND, r);
+    const name = `${pick(FIRST, r)} ${animal}${pick(THIRD, r)}`.trim();
     if (new TextEncoder().encode(name).length > 32) continue;
     if (seen.has(name)) continue;
     seen.add(name);
-    ideas.push({ name, symbol: tickerFor(name), description: pick(LINES, r) });
+    ideas.push({ name, symbol: tickerFor(name, animal), description: pick(LINES, r) });
   }
   return ideas;
 }

@@ -1,5 +1,8 @@
 # Phantom trading bot
 
+> Also in this repo: [`launchpad/`](launchpad/README.md), **kimlaunch**, a memecoin launchpad website on
+> Raydium LaunchLab ("build your own rocket here"). It is separate from the bot.
+
 Trades BTC automatically from a dedicated Phantom (Solana) wallet. **It starts in paper mode and
 refuses real money until every go-live check passes.**
 

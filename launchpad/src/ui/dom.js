@@ -50,16 +50,21 @@ export function short(address, n = 4) {
   return s.length > n * 2 + 1 ? `${s.slice(0, n)}…${s.slice(-n)}` : s;
 }
 
+// 58600 -> 58.6k, 85 -> 85, 4.4 -> 4.4, 0.0123 -> 0.012
 export function compact(n, { digits = 1 } = {}) {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
-  if (abs >= 1e9) return `${(n / 1e9).toFixed(digits)}B`;
-  if (abs >= 1e6) return `${(n / 1e6).toFixed(digits)}M`;
-  if (abs >= 1e3) return `${(n / 1e3).toFixed(digits)}k`;
-  if (abs >= 100) return n.toFixed(0);
-  if (abs >= 1) return n.toFixed(2);
-  return n.toPrecision(2);
+  const trim = (x, d) => String(Number(x.toFixed(d)));
+  if (abs >= 1e9) return `${trim(n / 1e9, digits)}B`;
+  if (abs >= 1e6) return `${trim(n / 1e6, digits)}M`;
+  if (abs >= 1e3) return `${trim(n / 1e3, digits)}k`;
+  if (abs >= 100) return trim(n, 0);
+  if (abs >= 1) return trim(n, 2);
+  if (abs === 0) return "0";
+  return String(Number(n.toPrecision(2)));
 }
+
+export const count = (n) => Number(n).toLocaleString("en-US");
 
 export const usd = (n) => (n === null || n === undefined || !Number.isFinite(n) ? "—" : `$${compact(n)}`);
 
@@ -123,6 +128,7 @@ const PATHS = {
   globe: '<circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
   arrow: '<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+  left: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
   alert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   sparkles:
     '<path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0l1.58 6.14a2 2 0 0 0 1.44 1.44l6.14 1.58a.5.5 0 0 1 0 .96l-6.14 1.58a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/>',

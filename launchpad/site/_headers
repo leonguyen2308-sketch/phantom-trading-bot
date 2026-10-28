@@ -1,0 +1,16 @@
+# Netlify and Cloudflare Pages read this file. Other hosts: set the same headers there.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'self'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+/config.js
+  Cache-Control: no-cache
+
+/index.html
+  Cache-Control: no-cache
+
+/assets/app.js
+  Cache-Control: no-cache

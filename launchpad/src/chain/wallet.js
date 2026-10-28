@@ -7,7 +7,6 @@ const CONNECT = "standard:connect";
 const DISCONNECT = "standard:disconnect";
 const EVENTS = "standard:events";
 const SIGN_TX = "solana:signTransaction";
-const SIGN_AND_SEND = "solana:signAndSendTransaction";
 
 export const chainId = (network) => (network === "devnet" ? "solana:devnet" : "solana:mainnet");
 
@@ -69,23 +68,6 @@ class StandardWallet {
       throw wrapError(e, "sign the transaction");
     }
   }
-  get canSignAndSend() {
-    return Boolean(this.wallet.features[SIGN_AND_SEND]);
-  }
-  // Single-signer transactions only: the wallet may add its own safety instructions.
-  async signAndSend(tx, network) {
-    try {
-      const [out] = await this.wallet.features[SIGN_AND_SEND].signAndSendTransaction({
-        account: this.account,
-        transaction: tx.serialize(),
-        chain: chainId(network),
-        options: { preflightCommitment: "confirmed" },
-      });
-      return out.signature;
-    } catch (e) {
-      throw wrapError(e, "send the transaction");
-    }
-  }
 }
 
 class InjectedPhantom {
@@ -119,9 +101,6 @@ class InjectedPhantom {
     } catch (e) {
       throw wrapError(e, "sign the transaction");
     }
-  }
-  get canSignAndSend() {
-    return false;
   }
 }
 
