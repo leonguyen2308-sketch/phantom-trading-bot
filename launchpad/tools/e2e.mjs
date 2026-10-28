@@ -21,6 +21,7 @@ const FONTS = process.env.E2E_FONTS; // optional folder with a cached Google Fon
 const FEE_WALLET = new PublicKey("DFAcvisLammoF7ZDLJWyC47EqKzXqWRWgwdNS34qa9Lj");
 const RPC = "https://rpc.mock.test/";
 let configFeeWallet = FEE_WALLET; // switched to the user's own wallet for the "launch from the fee wallet" check
+let configHide = [];
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png" };
 
@@ -102,7 +103,7 @@ async function route(r, siteUrl) {
   const req = r.request();
   const url = new URL(req.url());
   if (url.origin === siteUrl && url.pathname === "/config.js") {
-    const cfg = { siteName: "kimlaunch", siteUrl: "https://kimlaunch.example", network: "mainnet", rpcUrl: RPC, feeWallet: configFeeWallet.toBase58(), feeSol: 0.01, links: { x: "https://x.com/kimlaunch", telegram: "" } };
+    const cfg = { siteName: "kimlaunch", siteUrl: "https://kimlaunch.example", network: "mainnet", rpcUrl: RPC, feeWallet: configFeeWallet.toBase58(), hide: configHide, feeSol: 0.01, links: { x: "https://x.com/kimlaunch", telegram: "" } };
     return r.fulfill({ contentType: "text/javascript", body: `window.KIMLAUNCH_CONFIG = ${JSON.stringify(cfg)};` });
   }
   if (url.origin === siteUrl) return r.continue();
@@ -315,6 +316,17 @@ try {
   configFeeWallet = FEE_WALLET;
   await own.close();
   step("launching from the fee wallet shows the fee coming back");
+
+  // The owner can take a coin off the board.
+  configHide = ["$CFROG"];
+  const hidden = await newPage({ width: 1440, height: 900 });
+  await hidden.goto(siteUrl);
+  await hidden.waitForFunction(() => document.querySelectorAll(".card").length >= 9);
+  const listed = await hidden.$$eval(".card .card-name b", (els) => els.map((e) => e.textContent));
+  assert.ok(!listed.includes("Comrade Frog") && listed.includes("Kimchi Fund"), "a hidden ticker is off the board");
+  configHide = [];
+  await hidden.close();
+  step("a hidden coin is off the board");
 
   // Mobile
   const phone = await newPage({ width: 390, height: 844 });

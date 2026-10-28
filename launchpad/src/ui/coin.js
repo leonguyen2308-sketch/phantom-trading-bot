@@ -118,6 +118,10 @@ export function renderCoin(root, app, mintParam) {
     const c = view();
     const el = $("#coin", root);
     if (!el) return;
+    if (app.isHidden(c)) {
+      mount(el, html`<div class="empty"><h3>this coin was taken off the pad</h3><p class="muted">the site owner hid it from this launchpad.</p><a class="btn btn-dark" href="#/">back to the pad</a></div>`);
+      return;
+    }
     if (state.loaded && !state.coin?.pool && !state.coin?.onchain && !launch()) {
       mount(el, html`<div class="empty"><h3>no coin found at ${short(mint, 6)}</h3><p class="muted">${state.error ?? "it may not have landed yet. give it a few seconds."}</p></div>`);
       return;

@@ -31,4 +31,8 @@ window.KIMLAUNCH_CONFIG = {
 
   // Your socials (leave empty to hide).
   links: { x: "", telegram: "" },
+
+  // Coins to take off the board (scams, copies, offensive names): add a coin's mint address or
+  // its ticker, e.g. hide: ["9xYz...pump", "SCAM"]. Hidden coins can't be traded here either.
+  hide: [],
 };

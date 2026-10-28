@@ -42,6 +42,7 @@ function readConfig(raw) {
     migrateType: raw.migrateType === "amm" ? "amm" : "cpmm",
     microLamports: PRIORITY[raw.priorityFee] ?? PRIORITY.fast,
     links: { x: raw.links?.x || "", telegram: raw.links?.telegram || "" },
+    hide: new Set((Array.isArray(raw.hide) ? raw.hide : []).map((v) => String(v).trim().replace(/^\$/, "").toLowerCase()).filter(Boolean)),
   };
 }
 
@@ -81,13 +82,20 @@ export const app = {
   },
   // Coins with their live numbers, newest first. Later copies of a ticker or name are left out.
   coins() {
-    return originals(this.launches).map((l) => coinView(l, this.pools.get(l.mint), this.metas.get(l.mint), this.solUsd));
+    return originals(this.launches.filter((l) => !this.isHidden(l))).map((l) =>
+      coinView(l, this.pools.get(l.mint), this.metas.get(l.mint), this.solUsd),
+    );
   },
   // The coin already using this ticker or name, if any.
   taken({ name, symbol }) {
     const n = name?.trim().toLowerCase();
     const s = symbol?.trim().toLowerCase();
-    return originals(this.launches).find((l) => (s && l.symbol.toLowerCase() === s) || (n && l.name.toLowerCase() === n)) ?? null;
+    return originals(this.launches.filter((l) => !this.isHidden(l))).find((l) => (s && l.symbol.toLowerCase() === s) || (n && l.name.toLowerCase() === n)) ?? null;
+  },
+  // Coins the site owner listed in config.js `hide`, by mint address or ticker.
+  isHidden(coin) {
+    const hide = this.cfg?.hide;
+    return Boolean(hide?.size && (hide.has(String(coin.mint).toLowerCase()) || hide.has(String(coin.symbol ?? "").toLowerCase())));
   },
 };
 

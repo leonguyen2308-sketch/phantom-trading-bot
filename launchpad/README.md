@@ -28,6 +28,7 @@ Mở `site/config.js`, sửa rồi lưu. Không cần build lại.
 | `feeWallet` | Ví nhận phí (đã điền sẵn ví của bạn) |
 | `feeSol` | Phí mỗi lần tạo coin (đang là `0.01`) |
 | `links` | Link X / Telegram của bạn (để trống thì ẩn) |
+| `hide` | Ẩn coin khỏi bảng (lừa đảo, tên xấu, coin nhái): ghi địa chỉ coin hoặc ticker, ví dụ `hide: ["SCAM"]` |
 
 **Lấy `rpcUrl` miễn phí:** đăng ký tại [helius.dev](https://www.helius.dev), copy API key, rồi điền:
 
