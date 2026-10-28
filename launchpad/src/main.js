@@ -3,6 +3,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import * as ll from "./chain/launchlab.js";
 import { fetchCoinMeta, fetchLaunches, fetchPools } from "./chain/indexer.js";
 import { solUsd } from "./chain/price.js";
+import { failoverFetch, rpcEndpoints } from "./chain/rpc.js";
 import { availableWallets, isMobile, onWalletsChanged, phantomBrowseLink } from "./chain/wallet.js";
 import { $, $$, copyText, html, icon, mount, on, openModal, short, sol, toast, ago } from "./ui/dom.js";
 import { renderBoard } from "./ui/board.js";
@@ -12,7 +13,6 @@ import { renderHow } from "./ui/how.js";
 import { pitchThree } from "./ui/ideas.js";
 
 const PRIORITY = { normal: 50_000, fast: 200_000, turbo: 1_000_000 };
-const PUBLIC_RPC = { mainnet: "https://api.mainnet-beta.solana.com", devnet: "https://api.devnet.solana.com" };
 
 function readConfig(raw) {
   const network = raw.network === "devnet" ? "devnet" : "mainnet";
@@ -31,7 +31,7 @@ function readConfig(raw) {
     name: String(raw.siteName || "kimlaunch"),
     url: siteUrl,
     network,
-    rpcUrl: String(raw.rpcUrl || "").trim() || PUBLIC_RPC[network],
+    rpcEndpoints: rpcEndpoints(network, String(raw.rpcUrl || "").trim()),
     usingPublicRpc: !String(raw.rpcUrl || "").trim(),
     feeWallet,
     feeSol,
@@ -505,7 +505,10 @@ function start() {
     mount(view(), html`<div class="panel error-panel">${icon("alert")} ${e.message}</div>`);
     return;
   }
-  app.connection = new Connection(app.cfg.rpcUrl, { commitment: "confirmed" });
+  app.connection = new Connection(app.cfg.rpcEndpoints[0], {
+    commitment: "confirmed",
+    fetch: failoverFetch(app.cfg.rpcEndpoints),
+  });
   app.program = ll.NETWORKS[app.cfg.network].program;
   document.documentElement.dataset.network = app.cfg.network;
   for (const el of $$("[data-site-name]")) el.textContent = app.cfg.name;

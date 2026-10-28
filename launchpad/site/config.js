@@ -7,9 +7,9 @@ window.KIMLAUNCH_CONFIG = {
   // "mainnet" for real coins, "devnet" to test with free SOL first.
   network: "mainnet",
 
-  // Your Solana RPC address. The free public one is slow and often refuses browsers:
-  // get a free key at helius.dev and paste https://mainnet.helius-rpc.com/?api-key=YOUR_KEY
-  // (for devnet: https://devnet.helius-rpc.com/?api-key=YOUR_KEY).
+  // Your Solana RPC address. Left empty, the site falls back to free public RPCs, which are slow
+  // and sometimes refuse browsers. Get a free key at helius.dev and paste
+  // https://mainnet.helius-rpc.com/?api-key=YOUR_KEY (for devnet: https://devnet.helius-rpc.com/?api-key=YOUR_KEY).
   rpcUrl: "",
 
   // Every launch pays this much SOL to this wallet, in the same transaction as the launch.

@@ -24,7 +24,7 @@ Mở `site/config.js`, sửa rồi lưu. Không cần build lại.
 | `siteName` | Tên hiện trên web (mặc định `kimlaunch`) |
 | `siteUrl` | Địa chỉ web của bạn, ví dụ `https://kimlaunch.fun` (ghi vào metadata của từng coin) |
 | `network` | `"mainnet"` để chạy thật, `"devnet"` để thử bằng SOL ảo |
-| `rpcUrl` | **Bắt buộc cho mainnet.** RPC công cộng của Solana hay chặn trình duyệt |
+| `rpcUrl` | **Rất nên điền.** Để trống thì web dùng RPC công cộng miễn phí: chậm, lúc được lúc không |
 | `feeWallet` | Ví nhận phí (đã điền sẵn ví của bạn) |
 | `feeSol` | Phí mỗi lần tạo coin (đang là `0.01`) |
 | `links` | Link X / Telegram của bạn (để trống thì ẩn) |
