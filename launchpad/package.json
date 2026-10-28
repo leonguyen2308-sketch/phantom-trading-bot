@@ -8,7 +8,8 @@
     "build": "node tools/build.mjs",
     "test": "node --test test/*.test.js",
     "e2e": "node tools/e2e.mjs",
-    "serve": "node tools/serve.mjs"
+    "serve": "node tools/serve.mjs",
+    "promo": "node tools/promo.mjs"
   },
   "dependencies": {
     "@solana/web3.js": "1.98.4",

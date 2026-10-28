@@ -1,163 +1,22 @@
 // Browser test of the whole site against a mock chain, mock wallet and mock Arweave:
 // board, connect, launch with a first buy (fee checked on the wire), buy, sell, screenshots.
 // Run: npm run build && npm run e2e   (screenshots land in $SHOTS or ./shots)
-import { createServer } from "node:http";
-import { readFile, mkdir, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { extname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { mkdir, readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 import assert from "node:assert/strict";
-import { Keypair, PublicKey, SystemInstruction, SystemProgram, VersionedTransaction } from "@solana/web3.js";
-import { DataItem } from "@dha-team/arbundles";
-import * as ll from "../src/chain/launchlab.js";
-import { createMockChain } from "./mock-chain.mjs";
+import { SystemInstruction, SystemProgram } from "@solana/web3.js";
+import { createWorld, FEE_WALLET, FIXTURES } from "./world.mjs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
-const SITE = fileURLToPath(new URL("../site/", import.meta.url));
-const FIXTURES = fileURLToPath(new URL("./fixtures/", import.meta.url));
 const SHOTS = process.env.SHOTS || "shots";
-const FONTS = process.env.E2E_FONTS; // optional folder with a cached Google Fonts css + files
-const FEE_WALLET = new PublicKey("DFAcvisLammoF7ZDLJWyC47EqKzXqWRWgwdNS34qa9Lj");
-const RPC = "https://rpc.mock.test/";
-let configFeeWallet = FEE_WALLET; // switched to the user's own wallet for the "launch from the fee wallet" check
-let configHide = [];
 
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png" };
-
-function serve() {
-  return new Promise((resolve) => {
-    const server = createServer(async (req, res) => {
-      const path = new URL(req.url, "http://x").pathname;
-      try {
-        const body = await readFile(join(SITE, path === "/" ? "index.html" : path));
-        res.writeHead(200, { "content-type": TYPES[extname(path)] ?? "text/html" });
-        res.end(body);
-      } catch {
-        res.writeHead(404).end();
-      }
-    });
-    server.listen(0, () => resolve({ server, url: `http://localhost:${server.address().port}` }));
-  });
-}
-
-// ---- mock world --------------------------------------------------------------------------------
-const chain = createMockChain({ feeWallet: FEE_WALLET });
-const arweave = new Map(); // id -> { type, body }
-let nextId = 0;
-const store = (type, body) => {
-  const id = `mock${String(nextId++).padStart(39, "0")}`;
-  arweave.set(id, { type, body: Buffer.from(body) });
-  return id;
-};
-
-const SEEDS = [
-  ["Supreme Rocket", "SUPREME", "supreme.webp", 61.2, false, 5400, "the leader's own rocket. approved."],
-  ["Juche Coin", "JUCHE", "juche.webp", 85, true, 86400 * 2, "self-reliance, but make it a memecoin."],
-  ["Comrade Frog", "CFROG", "frog.webp", 34.5, false, 7200, "ribbit for the republic."],
-  ["Orbit Program", "ORBIT", "orbit.webp", 72.8, false, 3600 * 9, "five-year plan: orbit by friday."],
-  ["Kimchi Fund", "KIMCHI", "kimchi.webp", 12.1, false, 1500, "fermented gains."],
-  ["Hermit Hamster", "HMSTR", "hamster.webp", 4.4, false, 600, ""],
-  ["Glorious Medal", "MEDAL", "medal.webp", 85, true, 86400 * 4, "every holder gets one."],
-  ["Penguin Parade", "PNGN", "penguin.webp", 21.9, false, 3600 * 30, "march with us."],
-  ["Parade Day", "PARADE", "parade.webp", 47.3, false, 3600 * 3, "the biggest parade on solana."],
-  ["Dear Shiba", "DSHIB", "shiba.webp", 8.7, false, 900, "much leader. very supreme."],
-];
-
-for (const [name, symbol, file, raised, graduated, ago, description] of SEEDS) {
-  const image = store("image/webp", await readFile(join(FIXTURES, file)));
-  const meta = store(
-    "application/json",
-    JSON.stringify({ name, symbol, description, image: `https://arweave.net/${image}`, twitter: symbol === "SUPREME" ? "https://x.com/supreme" : "", website: symbol === "ORBIT" ? "https://orbit.example" : "" }),
-  );
-  chain.seedLaunch({ name, symbol, uri: `https://arweave.net/${meta}`, raisedSol: raised, graduated, agoSeconds: ago });
-}
-chain.seedNoise();
-
-const user = Keypair.generate();
-chain.credit(user.publicKey, 3_000_000_000);
-
-const walletScript = (address, bytes) => `(() => {
-  const account = { address: "${address}", publicKey: new Uint8Array(${JSON.stringify(bytes)}), chains: ["solana:mainnet", "solana:devnet"], features: ["solana:signTransaction"] };
-  const listeners = {};
-  let authorized = false;
-  const wallet = {
-    version: "1.0.0", name: "Phantom", chains: ["solana:mainnet", "solana:devnet"], accounts: [],
-    icon: "data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#ab9ff2"/></svg>').toString("base64")}",
-    features: {
-      "standard:connect": { version: "1.0.0", connect: async ({ silent } = {}) => {
-        if (silent && !authorized) return { accounts: [] };
-        authorized = true; wallet.accounts = [account]; return { accounts: wallet.accounts }; } },
-      "standard:disconnect": { version: "1.0.0", disconnect: async () => { wallet.accounts = []; } },
-      "standard:events": { version: "1.0.0", on: (ev, fn) => { (listeners[ev] ||= []).push(fn); return () => {}; } },
-      "solana:signTransaction": { version: "1.0.0", supportedTransactionVersions: ["legacy", 0],
-        signTransaction: async (...inputs) => Promise.all(inputs.map(async (input) => ({ signedTransaction: new Uint8Array(await window.__mockSign(Array.from(input.transaction))) }))) },
-    },
-  };
-  const register = (api) => api.register(wallet);
-  window.addEventListener("wallet-standard:app-ready", (e) => register(e.detail));
-  try { window.dispatchEvent(new CustomEvent("wallet-standard:register-wallet", { detail: register })); } catch {}
-})();`;
-
-async function route(r, siteUrl) {
-  const req = r.request();
-  const url = new URL(req.url());
-  if (url.origin === siteUrl && url.pathname === "/config.js") {
-    const cfg = { siteName: "kimlaunch", siteUrl: "https://kimlaunch.example", network: "mainnet", rpcUrl: RPC, feeWallet: configFeeWallet.toBase58(), hide: configHide, feeSol: 0.01, links: { x: "https://x.com/kimlaunch", telegram: "" } };
-    return r.fulfill({ contentType: "text/javascript", body: `window.KIMLAUNCH_CONFIG = ${JSON.stringify(cfg)};` });
-  }
-  if (url.origin === siteUrl) return r.continue();
-  if (url.href.startsWith(RPC)) {
-    return r.fulfill({ contentType: "application/json", body: JSON.stringify(chain.handle(JSON.parse(req.postData()))) });
-  }
-  if (url.hostname === "upload.ardrive.io") {
-    const body = req.postDataBuffer();
-    if (url.pathname === "/v1/tx/solana") {
-      const item = new DataItem(body);
-      assert.equal(await DataItem.verify(body), true, "upload must be a valid signed data item");
-      const type = item.tags.find((t) => t.name === "Content-Type")?.value;
-      arweave.set(item.id, { type, body: Buffer.from(item.rawData) });
-      return r.fulfill({ contentType: "application/json", body: JSON.stringify({ id: item.id, owner: item.owner }) });
-    }
-    return r.fulfill({ status: 404, body: "no" });
-  }
-  if (url.hostname === "arweave.net") {
-    const hit = arweave.get(url.pathname.slice(1));
-    return hit ? r.fulfill({ contentType: hit.type, body: hit.body, headers: { "access-control-allow-origin": "*" } }) : r.fulfill({ status: 404, body: "" });
-  }
-  if (url.hostname === "lite-api.jup.ag") {
-    return r.fulfill({ contentType: "application/json", body: JSON.stringify({ So11111111111111111111111111111111111111112: { usdPrice: 178.42 } }), headers: { "access-control-allow-origin": "*" } });
-  }
-  if (FONTS && url.hostname === "fonts.googleapis.com") {
-    return r.fulfill({ contentType: "text/css", body: await readFile(join(FONTS, "fonts.css")) });
-  }
-  if (FONTS && url.hostname === "fonts.gstatic.com") {
-    const file = join(FONTS, url.pathname.slice(1).replace(/\//g, "_"));
-    if (existsSync(file)) return r.fulfill({ contentType: "font/woff2", body: await readFile(file), headers: { "access-control-allow-origin": "*" } });
-  }
-  return r.abort();
-}
-
-// ---- run ---------------------------------------------------------------------------------------
 await mkdir(SHOTS, { recursive: true });
-const { server, url: siteUrl } = await serve();
+const world = await createWorld();
+const { chain, arweave, user, siteUrl } = world;
 const browser = await chromium.launch();
 const problems = [];
-
-async function newPage(viewport) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: viewport.width < 600, hasTouch: viewport.width < 600 });
-  await context.exposeFunction("__mockSign", (bytes) => {
-    const tx = VersionedTransaction.deserialize(Uint8Array.from(bytes));
-    tx.sign([user]);
-    return Array.from(tx.serialize());
-  });
-  await context.addInitScript(walletScript(user.publicKey.toBase58(), Array.from(user.publicKey.toBytes())));
-  await context.route("**/*", (r) => route(r, siteUrl));
-  const page = await context.newPage();
-  page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
-  page.on("console", (m) => m.type() === "error" && problems.push(`console: ${m.text()}`));
-  return page;
-}
+const newPage = (viewport) => world.newPage(browser, viewport, { problems });
 
 async function shot(page, name, full = true) {
   if (full) await page.evaluate(() => window.scrollTo(0, 0));
@@ -307,24 +166,24 @@ try {
   step("the leader pitches ideas that fill the form");
 
   // Launching from the fee wallet itself: the page says the fee comes straight back.
-  configFeeWallet = user.publicKey;
+  world.config.feeWallet = user.publicKey.toBase58();
   const own = await newPage({ width: 1440, height: 900 });
   await own.goto(`${siteUrl}/#/create`);
   await own.waitForSelector("#name");
   await own.click(".side [data-wallet-button]");
   await own.waitForFunction(() => /comes back to you/.test(document.querySelector("#costs")?.textContent ?? ""));
-  configFeeWallet = FEE_WALLET;
+  world.config.feeWallet = FEE_WALLET.toBase58();
   await own.close();
   step("launching from the fee wallet shows the fee coming back");
 
   // The owner can take a coin off the board.
-  configHide = ["$CFROG"];
+  world.config.hide = ["$CFROG"];
   const hidden = await newPage({ width: 1440, height: 900 });
   await hidden.goto(siteUrl);
   await hidden.waitForFunction(() => document.querySelectorAll(".card").length >= 9);
   const listed = await hidden.$$eval(".card .card-name b", (els) => els.map((e) => e.textContent));
   assert.ok(!listed.includes("Comrade Frog") && listed.includes("Kimchi Fund"), "a hidden ticker is off the board");
-  configHide = [];
+  world.config.hide = [];
   await hidden.close();
   step("a hidden coin is off the board");
 
@@ -354,5 +213,5 @@ try {
   console.log(`\nall good. screenshots in ${SHOTS}/: ${(await readdir(SHOTS)).join(", ")}`);
 } finally {
   await browser.close();
-  server.close();
+  world.close();
 }

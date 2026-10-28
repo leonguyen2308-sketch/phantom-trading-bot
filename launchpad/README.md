@@ -106,6 +106,7 @@ npm test           # so khớp với SDK Raydium, kiểm tra upload Arweave, ki�
 npm run build      # build src/ thành site/assets/app.js (cần chạy lại sau mỗi lần sửa src/)
 npm run serve      # xem thử ở http://localhost:8080
 npm run e2e        # chạy thử toàn bộ web trên Chromium với blockchain/ví giả (cần Playwright)
+npm run promo      # quay video giới thiệu (cần Playwright, ffmpeg, python3 + numpy) vào thư mục promo/
 ```
 
 ```
