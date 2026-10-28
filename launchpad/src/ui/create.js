@@ -211,12 +211,14 @@ export function renderCreate(root, app) {
     );
     for (const b of root.querySelectorAll("[data-preset]")) b.classList.toggle("on", Number(b.dataset.preset) === dev);
 
-    const total = app.cfg.feeSol + RENT_SOL + NETWORK_FEE_SOL + (dev ? dev + ATA_RENT_SOL : 0);
+    // Launching from the fee wallet itself: the fee goes out and straight back.
+    const ownLaunch = Boolean(app.publicKey?.equals(app.cfg.feeWallet));
+    const total = (ownLaunch ? 0 : app.cfg.feeSol) + RENT_SOL + NETWORK_FEE_SOL + (dev ? dev + ATA_RENT_SOL : 0);
     const lowBalance = app.balance !== null && app.publicKey && app.balance / 1e9 < total;
     mount(
       el("costs"),
-      html`<div class="cost"><span>launch fee</span><b class="mono">${app.cfg.feeSol} SOL</b></div>
-        <div class="cost"><span>Raydium accounts (rent)</span><b class="mono">≈ ${(RENT_SOL + (dev ? ATA_RENT_SOL : 0)).toFixed(4)} SOL</b></div>
+      html`<div class="cost"><span>launch fee${ownLaunch ? html` <em class="muted">(comes back to you: you are the fee wallet)</em>` : ""}</span><b class="mono">${ownLaunch ? html`<s>${app.cfg.feeSol} SOL</s>` : `${app.cfg.feeSol} SOL`}</b></div>
+        <div class="cost"><span>Solana rent for the coin's accounts <em class="muted">(not refundable)</em></span><b class="mono">≈ ${(RENT_SOL + (dev ? ATA_RENT_SOL : 0)).toFixed(4)} SOL</b></div>
         ${dev ? html`<div class="cost"><span>your first buy</span><b class="mono">${dev} SOL</b></div>` : ""}
         <div class="cost"><span>network fee</span><b class="mono">≈ ${NETWORK_FEE_SOL} SOL</b></div>
         <div class="cost total"><span>total</span><b class="mono">≈ ${Number(total.toFixed(4))} SOL</b></div>

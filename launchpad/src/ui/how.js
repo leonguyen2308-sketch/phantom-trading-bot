@@ -26,7 +26,7 @@ export function renderHow(root, app) {
           <h3>${icon("flame", { size: 18 })} what it costs</h3>
           <div class="cost-rows">
             <div class="cost"><span>launch fee, to ${app.cfg.name}</span><b class="mono">${fee} SOL</b></div>
-            <div class="cost"><span>Raydium accounts (rent, paid to the network)</span><b class="mono">≈ 0.015 SOL</b></div>
+            <div class="cost"><span>Solana rent for the coin's accounts (not refundable)</span><b class="mono">≈ 0.015 SOL</b></div>
             <div class="cost"><span>network fee</span><b class="mono">≈ 0.0002 SOL</b></div>
             <div class="cost"><span>trading on the curve</span><b class="mono">Raydium's fee, ~1%</b></div>
           </div>

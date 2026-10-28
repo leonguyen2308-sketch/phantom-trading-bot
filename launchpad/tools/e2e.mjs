@@ -20,6 +20,7 @@ const SHOTS = process.env.SHOTS || "shots";
 const FONTS = process.env.E2E_FONTS; // optional folder with a cached Google Fonts css + files
 const FEE_WALLET = new PublicKey("DFAcvisLammoF7ZDLJWyC47EqKzXqWRWgwdNS34qa9Lj");
 const RPC = "https://rpc.mock.test/";
+let configFeeWallet = FEE_WALLET; // switched to the user's own wallet for the "launch from the fee wallet" check
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".webp": "image/webp", ".jpg": "image/jpeg", ".png": "image/png" };
 
@@ -101,7 +102,7 @@ async function route(r, siteUrl) {
   const req = r.request();
   const url = new URL(req.url());
   if (url.origin === siteUrl && url.pathname === "/config.js") {
-    const cfg = { siteName: "kimlaunch", siteUrl: "https://kimlaunch.example", network: "mainnet", rpcUrl: RPC, feeWallet: FEE_WALLET.toBase58(), feeSol: 0.01, links: { x: "https://x.com/kimlaunch", telegram: "" } };
+    const cfg = { siteName: "kimlaunch", siteUrl: "https://kimlaunch.example", network: "mainnet", rpcUrl: RPC, feeWallet: configFeeWallet.toBase58(), feeSol: 0.01, links: { x: "https://x.com/kimlaunch", telegram: "" } };
     return r.fulfill({ contentType: "text/javascript", body: `window.KIMLAUNCH_CONFIG = ${JSON.stringify(cfg)};` });
   }
   if (url.origin === siteUrl) return r.continue();
@@ -303,6 +304,17 @@ try {
   await page.waitForSelector("#name");
   assert.ok((await page.inputValue("#name")).length > 0, "an idea fills the form");
   step("the leader pitches ideas that fill the form");
+
+  // Launching from the fee wallet itself: the page says the fee comes straight back.
+  configFeeWallet = user.publicKey;
+  const own = await newPage({ width: 1440, height: 900 });
+  await own.goto(`${siteUrl}/#/create`);
+  await own.waitForSelector("#name");
+  await own.click(".side [data-wallet-button]");
+  await own.waitForFunction(() => /comes back to you/.test(document.querySelector("#costs")?.textContent ?? ""));
+  configFeeWallet = FEE_WALLET;
+  await own.close();
+  step("launching from the fee wallet shows the fee coming back");
 
   // Mobile
   const phone = await newPage({ width: 390, height: 844 });
